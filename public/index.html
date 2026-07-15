@@ -68,14 +68,72 @@
   .login-box input { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #35383d; background: #16181b; color: inherit; font-size: 15px; margin: 16px 0 10px; }
   .login-box button { width: 100%; background: #2f6fed; color: white; padding: 12px; }
   .muted { opacity: 0.55; font-size: 13px; }
-  #feedback-chip { position: fixed; bottom: 14px; right: 14px; z-index: 20; }
+  #feedback-chip { position: fixed; bottom: 82px; right: 14px; z-index: 20; }
   #feedback-chip button { background: #26292d; color: #e8eaed; border-radius: 999px; padding: 8px 14px; font-size: 13px; }
+  @media (prefers-color-scheme: light) { #feedback-chip button { background: #eceef1; color: #14171a; } }
+
+  /* ── Talk bar (persistent bottom bar) ─────────────────────── */
+  #talk-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+    background: rgba(20,22,26,0.94); backdrop-filter: blur(10px);
+    border-top: 1px solid #2a2d31;
+  }
+  @media (prefers-color-scheme: light) {
+    #talk-bar { background: rgba(244,245,247,0.94); border-top-color: #dcdfe3; }
+  }
+  main { padding-bottom: 96px; }
+
+  #talk-orb-wrap { position: relative; width: 40px; height: 40px; flex-shrink: 0; }
+  #talk-orb {
+    width: 100%; height: 100%; border-radius: 50%;
+    background: radial-gradient(circle at 38% 38%, #6ea8fe, #2f5fc4);
+    transition: box-shadow 0.3s;
+  }
+  #talk-orb.listening { animation: talk-breathe 3.5s ease-in-out infinite; }
+  @keyframes talk-breathe {
+    0%, 100% { transform: scale(1);    box-shadow: 0 0 0 4px rgba(110,168,254,0.15); }
+    50%       { transform: scale(1.06); box-shadow: 0 0 0 10px rgba(110,168,254,0.08); }
+  }
+  #talk-orb.speaking { animation: talk-speak 1.1s ease-in-out infinite; }
+  @keyframes talk-speak {
+    0%, 100% { box-shadow: 0 0 0 0px rgba(110,168,254,0.55); }
+    50%       { box-shadow: 0 0 0 14px rgba(110,168,254,0.0); }
+  }
+  #talk-orb.thinking { animation: talk-think 1.6s ease-in-out infinite; }
+  @keyframes talk-think {
+    0%, 100% { filter: brightness(0.85); }
+    50%       { filter: brightness(1.3); }
+  }
+  #talk-orb.off { background: #3a3d41; }
+  @media (prefers-color-scheme: light) { #talk-orb.off { background: #c8ccd1; } }
+
+  #talk-info { flex: 1; min-width: 0; }
+  #talk-label { font-size: 14.5px; font-weight: 650; }
+  #talk-sub { font-size: 12px; opacity: 0.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  #talk-btn {
+    font-size: 14px; font-weight: 700; padding: 13px 20px; border-radius: 12px;
+    border: none; cursor: pointer; flex-shrink: 0; min-width: 96px;
+  }
+  #talk-btn.start { background: #2f6fed; color: #fff; }
+  #talk-btn.end { background: #3a1414; color: #ff8080; }
 </style>
 </head>
 <body>
 
 <div id="app"></div>
 <div id="feedback-chip"><button onclick="location.href='mailto:mw@mike-wolf.com?subject=Pulse%20Zero%20feedback'">feedback</button></div>
+
+<div id="talk-bar">
+  <div id="talk-orb-wrap"><div id="talk-orb" class="off"></div></div>
+  <div id="talk-info">
+    <div id="talk-label">Talk to Pulse</div>
+    <div id="talk-sub">Tap to start — ambient, hands-free after that</div>
+  </div>
+  <button id="talk-btn" class="start">Start</button>
+</div>
 
 <script>
 const SUPABASE_URL = 'https://omfwcodoimjmbrhssvfl.supabase.co';
@@ -227,6 +285,135 @@ async function boot() {
   });
 }
 boot();
+</script>
+
+<script type="module">
+  import { Conversation } from 'https://esm.sh/@elevenlabs/client@latest';
+
+  const AGENT_ID = 'agent_9901kxk0yphafwrvpes82h4me49n';
+  const CONSENT_KEY = 'pulse-talk-consented';
+
+  const orb = document.getElementById('talk-orb');
+  const label = document.getElementById('talk-label');
+  const sub = document.getElementById('talk-sub');
+  const btn = document.getElementById('talk-btn');
+
+  let conversation = null;
+  let starting = false;
+  let wantActive = false; // user's intent: should we be connected right now
+
+  function setOrb(mode) {
+    orb.className = mode; // 'off' | 'listening' | 'speaking' | 'thinking'
+  }
+
+  function setUi(state, detail) {
+    if (state === 'off') {
+      setOrb('off');
+      label.textContent = 'Talk to Pulse';
+      sub.textContent = detail || 'Tap to start — ambient, hands-free after that';
+      btn.textContent = 'Start';
+      btn.className = 'start';
+    } else if (state === 'connecting') {
+      setOrb('thinking');
+      label.textContent = 'Connecting…';
+      sub.textContent = '';
+      btn.textContent = 'Cancel';
+      btn.className = 'end';
+    } else if (state === 'listening') {
+      setOrb('listening');
+      label.textContent = 'Pulse is listening';
+      sub.textContent = 'Just talk — no button needed';
+      btn.textContent = 'End';
+      btn.className = 'end';
+    } else if (state === 'speaking') {
+      setOrb('speaking');
+      label.textContent = 'Pulse is speaking';
+      sub.textContent = 'You can interrupt any time';
+      btn.textContent = 'End';
+      btn.className = 'end';
+    } else if (state === 'thinking') {
+      setOrb('thinking');
+      label.textContent = 'Pulse is thinking…';
+      sub.textContent = '';
+      btn.textContent = 'End';
+      btn.className = 'end';
+    } else if (state === 'error') {
+      setOrb('off');
+      label.textContent = 'Talk unavailable';
+      sub.textContent = detail || 'Something went wrong. Tap to retry.';
+      btn.textContent = 'Retry';
+      btn.className = 'start';
+    }
+  }
+
+  async function startTalk() {
+    if (starting || conversation) return;
+    starting = true;
+    wantActive = true;
+    setUi('connecting');
+    try {
+      const pre = await navigator.mediaDevices.getUserMedia({ audio: true });
+      pre.getTracks().forEach((t) => t.stop());
+      try { localStorage.setItem(CONSENT_KEY, '1'); } catch (_) {}
+    } catch (err) {
+      starting = false;
+      wantActive = false;
+      setUi('error', 'Microphone access denied.');
+      return;
+    }
+
+    try {
+      conversation = await Conversation.startSession({
+        agentId: AGENT_ID,
+        onConnect: () => { starting = false; setUi('listening'); },
+        onDisconnect: () => { conversation = null; if (wantActive) { wantActive = false; } setUi('off'); },
+        onError: (err) => { conversation = null; starting = false; wantActive = false; setUi('error', String(err)); },
+        onModeChange: ({ mode }) => {
+          if (mode === 'speaking') setUi('speaking');
+          else if (mode === 'thinking' || mode === 'processing') setUi('thinking');
+          else setUi('listening');
+        },
+      });
+    } catch (err) {
+      starting = false;
+      wantActive = false;
+      conversation = null;
+      setUi('error', String(err));
+    }
+  }
+
+  async function endTalk() {
+    wantActive = false;
+    starting = false;
+    if (conversation) {
+      try { await conversation.endSession(); } catch (_) {}
+      conversation = null;
+    }
+    setUi('off');
+  }
+
+  btn.addEventListener('click', () => {
+    if (conversation || starting) endTalk(); else startTalk();
+  });
+
+  // Ambient: pause when the tab is hidden, resume when it's visible again —
+  // "default ON while the tab is open and visible" without burning ElevenLabs
+  // minutes on a backgrounded tab.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (conversation) endTalk().then(() => { wantActive = true; });
+    } else if (wantActive && !conversation && !starting) {
+      startTalk();
+    }
+  });
+
+  // Auto-resume ambient listening on load if Mike has already granted mic
+  // permission once on this device — first-ever tap still required (browser
+  // audio-autoplay + mic-permission gesture rule), every load after that is
+  // hands-free.
+  if (localStorage.getItem(CONSENT_KEY) === '1' && !document.hidden) {
+    startTalk();
+  }
 </script>
 </body>
 </html>

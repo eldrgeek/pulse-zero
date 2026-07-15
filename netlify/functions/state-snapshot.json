@@ -1,0 +1,29 @@
+{
+  "generated_at": null,
+  "changelog": [
+    "2026-07-15 \u2014 Pulse Zero: Pulse stripped to bare manage-Mike core, new repo, live (Mike + Sonnet CCc)",
+    "2026-07-15 \u2014 second-brain: Claude.ai import loop actually closed, ChatGPT selector healed, Gemini gap diagnosed (Mike + Sonnet CCc)",
+    "2026-07-15 \u2014 AGI-2026 hub + all thinker sites promoted to full SOMA applications (Mike + Sonnet CCc)",
+    "2026-07-15 \u2014 YeshID pitch dossier + live \"For YeshID\" page shipped on soma-yeshid (Mike + Sonnet CCc)",
+    "2026-07-15 \u2014 INTOO adoption dossier + live \"For INTOO\" page shipped on Momentum (Mike + Sonnet CCc)",
+    "2026-07-15 \u2014 Four fleet dispatches (YeshID pitch, INTOO pitch, vault import, AGI-2026 SOMA-ification) + Adoption Board (Mike + Fable)",
+    "2026-07-15 \u2014 \"One Day\" briefing + Seed Doctrine + all-family strategy panel (Mike + Fable; panel Grok/Cody/Gem/Opie/Mem/Dee)",
+    "2026-07-15 \u2014 Vegas Connect: V'Greg standard, build-fix, human-figure avatar (Mike + Opus)",
+    "2026-07-15 \u2014 Vegas Connect: celebrations, real voice, host-intro, logo (Mike + Opus)",
+    "2026-07-15 \u2014 Vegas Connect: pilot-graph cleanup + Quest pages LIVE (Mike + Opus)"
+  ],
+  "live_urls": [
+    {
+      "name": "Pulse Zero",
+      "url": "https://pulse-zero.netlify.app"
+    },
+    {
+      "name": "SOMA hub (AGI-2026)",
+      "url": "https://minds-aligned-hub.netlify.app"
+    },
+    {
+      "name": "Momentum (INTOO)",
+      "url": "https://momentum-demo-esr.netlify.app"
+    }
+  ]
+}
