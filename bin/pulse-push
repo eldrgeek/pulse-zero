@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""pulse-push — push/list cards on the Pulse Zero board (manage-Mike surface).
+
+Usage:
+  pulse-push action   --title T --why W [--steps S] [--url U] [--source S]
+  pulse-push verdict  --artifact A --url U --summary S
+  pulse-push decision --question Q --options "A,B,C"
+  pulse-push brief    --title T --lines L
+  pulse-push --list-open
+  pulse-push --list-answers [--since ISO8601]
+
+Env:
+  PULSE_ZERO_SUPABASE_URL   (default: https://omfwcodoimjmbrhssvfl.supabase.co)
+  PULSE_ZERO_SERVICE_KEY    (required — Supabase service_role key, server-only)
+"""
+import argparse
+import json
+import os
+import sys
+import urllib.request
+
+DEFAULT_URL = "https://omfwcodoimjmbrhssvfl.supabase.co"
+APP_ID = "pulse-zero"
+BOARD_INBOX = os.path.expanduser("~/Projects/SOMA/board/inbox")
+
+
+def sb_request(method, path, key, url, body=None, params=None):
+    full = f"{url}/rest/v1/{path}"
+    if params:
+        full += "?" + "&".join(f"{k}={v}" for k, v in params.items())
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(full, data=data, method=method)
+    req.add_header("apikey", key)
+    req.add_header("Authorization", f"Bearer {key}")
+    req.add_header("Content-Type", "application/json")
+    if method == "POST":
+        req.add_header("Prefer", "return=representation")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read().decode() or "null")
+    except urllib.error.HTTPError as e:
+        sys.stderr.write(f"HTTP {e.code}: {e.read().decode()}\n")
+        sys.exit(1)
+
+
+def push(args, key, url):
+    payload = {}
+    ctype = args.type
+    if ctype == "action":
+        payload = {"title": args.title, "why": args.why, "steps": args.steps, "url": args.url}
+    elif ctype == "verdict":
+        payload = {"artifact_name": args.artifact, "url": args.url, "summary": args.summary}
+    elif ctype == "decision":
+        payload = {"question": args.question, "options": [o.strip() for o in (args.options or "").split(",") if o.strip()]}
+    elif ctype == "brief":
+        payload = {"title": args.title, "lines": args.lines}
+
+    row = {
+        "app_id": APP_ID,
+        "type": ctype,
+        "payload": payload,
+        "created_by": args.source or "unknown",
+        "status": "open",
+    }
+    result = sb_request("POST", "pulse_cards", key, url, body=row)
+    card = result[0] if isinstance(result, list) else result
+    print(f"pushed {ctype} card {card.get('id')}")
+    return card
+
+
+def list_cards(status_filter, key, url, since=None):
+    params = {"app_id": f"eq.{APP_ID}", "order": "created_at.desc", "limit": "200"}
+    if status_filter:
+        params["status"] = f"eq.{status_filter}"
+    if since:
+        params["answered_at"] = f"gte.{since}"
+    rows = sb_request("GET", "pulse_cards", key, url, params=params)
+    print(json.dumps(rows, indent=2))
+    return rows
+
+
+def sync_answers_to_board(rows):
+    os.makedirs(BOARD_INBOX, exist_ok=True)
+    for r in rows:
+        if r.get("status") == "open":
+            continue
+        card_file = os.path.join(BOARD_INBOX, f"pulse-zero-{r['id']}.json")
+        if os.path.exists(card_file):
+            continue
+        with open(card_file, "w") as f:
+            json.dump({
+                "source": "pulse-zero",
+                "card_id": r["id"],
+                "type": r["type"],
+                "payload": r["payload"],
+                "status": r["status"],
+                "answer": r.get("answer"),
+                "answered_at": r.get("answered_at"),
+            }, f, indent=2)
+
+
+def main():
+    p = argparse.ArgumentParser(description="Push/list cards on Pulse Zero")
+    sub = p.add_subparsers(dest="type")
+
+    a = sub.add_parser("action")
+    a.add_argument("--title", required=True)
+    a.add_argument("--why", required=True)
+    a.add_argument("--steps")
+    a.add_argument("--url")
+    a.add_argument("--source")
+
+    v = sub.add_parser("verdict")
+    v.add_argument("--artifact", required=True)
+    v.add_argument("--url", required=True)
+    v.add_argument("--summary", required=True)
+    v.add_argument("--source")
+
+    d = sub.add_parser("decision")
+    d.add_argument("--question", required=True)
+    d.add_argument("--options", required=True, help="comma-separated, max 4")
+    d.add_argument("--source")
+
+    b = sub.add_parser("brief")
+    b.add_argument("--title", required=True)
+    b.add_argument("--lines", required=True)
+    b.add_argument("--source")
+
+    p.add_argument("--list-open", action="store_true")
+    p.add_argument("--list-answers", action="store_true")
+    p.add_argument("--since")
+
+    args = p.parse_args()
+
+    key = os.environ.get("PULSE_ZERO_SERVICE_KEY")
+    url = os.environ.get("PULSE_ZERO_SUPABASE_URL", DEFAULT_URL)
+    if not key:
+        sys.stderr.write("PULSE_ZERO_SERVICE_KEY not set\n")
+        sys.exit(1)
+
+    if args.list_open:
+        list_cards("open", key, url)
+    elif args.list_answers:
+        rows = list_cards(None, key, url, since=args.since)
+        answered = [r for r in rows if r.get("status") != "open"]
+        sync_answers_to_board(answered)
+    elif args.type:
+        push(args, key, url)
+    else:
+        p.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Pulse Zero</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, system-ui, sans-serif;
+    background: #0b0d10; color: #f0f2f4; min-height: 100vh;
+  }
+  @media (prefers-color-scheme: light) {
+    body { background: #f4f5f7; color: #14171a; }
+  }
+  header {
+    position: sticky; top: 0; padding: 14px 16px; background: rgba(20,22,26,0.9);
+    backdrop-filter: blur(8px); border-bottom: 1px solid #2a2d31; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  @media (prefers-color-scheme: light) {
+    header { background: rgba(244,245,247,0.9); border-bottom-color: #dcdfe3; }
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  header .count { font-size: 13px; opacity: 0.6; }
+  main { max-width: 640px; margin: 0 auto; padding: 12px 12px 80px; }
+  .empty { text-align: center; opacity: 0.5; padding: 60px 20px; font-size: 15px; }
+  .card {
+    background: #16181b; border: 1px solid #26292d; border-radius: 14px;
+    padding: 16px; margin-bottom: 12px; animation: in 0.2s ease;
+  }
+  @media (prefers-color-scheme: light) {
+    .card { background: #fff; border-color: #e3e5e8; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+  }
+  @keyframes in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .kind {
+    display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; padding: 3px 8px; border-radius: 6px; margin-bottom: 8px;
+  }
+  .kind-action { background: #3a2e12; color: #e8b545; }
+  .kind-verdict { background: #12302e; color: #4ecdc4; }
+  .kind-decision { background: #2a1830; color: #d68fe0; }
+  .kind-brief { background: #16233a; color: #6ea8fe; }
+  .title { font-size: 16.5px; font-weight: 620; margin: 0 0 4px; line-height: 1.3; }
+  .why, .body-text { font-size: 14px; opacity: 0.75; margin: 0 0 10px; line-height: 1.45; white-space: pre-wrap; }
+  a.link { color: #6ea8fe; word-break: break-all; }
+  .steps { font-size: 13.5px; opacity: 0.85; margin: 8px 0; padding-left: 18px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  button {
+    font: inherit; font-size: 14px; font-weight: 600; padding: 10px 16px; border-radius: 10px;
+    border: none; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  .btn-primary { background: #2f6fed; color: white; }
+  .btn-secondary { background: #26292d; color: #e8eaed; }
+  @media (prefers-color-scheme: light) { .btn-secondary { background: #eceef1; color: #14171a; } }
+  .btn-destructive { background: #3a1414; color: #ff8080; }
+  input.textresp {
+    width: 100%; font: inherit; font-size: 14px; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid #35383d; background: #0e1013; color: inherit; margin-top: 8px;
+  }
+  .answered { opacity: 0.45; }
+  .answered .actions { display: none; }
+  .answer-tag { font-size: 12.5px; margin-top: 8px; padding: 6px 10px; background: #12302e; color: #4ecdc4; border-radius: 8px; display: inline-block; }
+  .login { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
+  .login-box { max-width: 360px; width: 100%; text-align: center; }
+  .login-box input { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #35383d; background: #16181b; color: inherit; font-size: 15px; margin: 16px 0 10px; }
+  .login-box button { width: 100%; background: #2f6fed; color: white; padding: 12px; }
+  .muted { opacity: 0.55; font-size: 13px; }
+  #feedback-chip { position: fixed; bottom: 14px; right: 14px; z-index: 20; }
+  #feedback-chip button { background: #26292d; color: #e8eaed; border-radius: 999px; padding: 8px 14px; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+<div id="feedback-chip"><button onclick="location.href='mailto:mw@mike-wolf.com?subject=Pulse%20Zero%20feedback'">feedback</button></div>
+
+<script>
+const SUPABASE_URL = 'https://omfwcodoimjmbrhssvfl.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9tZndjb2RvaW1qbWJyaHNzdmZsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2NzEyNjMsImV4cCI6MjA5NjI0NzI2M30.8Oe2JABFB5qN2dIFk-rccl7-F5R4YjqsTrGFAqZCAlE';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const APP_ID = 'pulse-zero';
+const app = document.getElementById('app');
+
+function esc(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function renderLogin() {
+  app.innerHTML = `
+    <div class="login"><div class="login-box">
+      <h1 style="margin-bottom:4px;">Pulse Zero</h1>
+      <p class="muted">Manage-Mike core. Magic link only.</p>
+      <input id="email" type="email" placeholder="mw@mike-wolf.com" autocomplete="email" />
+      <button id="send">Send magic link</button>
+      <p class="muted" id="status" style="margin-top:12px;"></p>
+    </div></div>`;
+  document.getElementById('send').onclick = async () => {
+    const email = document.getElementById('email').value.trim();
+    const status = document.getElementById('status');
+    status.textContent = 'Sending...';
+    const { error } = await sb.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: location.origin, data: { site_name: 'Pulse Zero' } }
+    });
+    status.textContent = error ? ('Error: ' + error.message) : 'Check your email for the link.';
+  };
+}
+
+function cardKindLabel(t) { return t.toUpperCase(); }
+
+function renderCard(c) {
+  const p = c.payload || {};
+  const answered = c.status !== 'open';
+  let body = '';
+  if (c.type === 'action') {
+    body = `
+      <p class="title">${esc(p.title)}</p>
+      <p class="why">${esc(p.why)}</p>
+      ${p.steps ? `<div class="steps">${esc(p.steps)}</div>` : ''}
+      ${p.url ? `<p><a class="link" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a></p>` : ''}
+      <div class="actions">
+        <button class="btn-primary" data-action="done">Done</button>
+        <button class="btn-secondary" data-action="skip">Skip</button>
+        <button class="btn-secondary" data-action="later">Later</button>
+      </div>`;
+  } else if (c.type === 'verdict') {
+    body = `
+      <p class="title">${esc(p.artifact_name)}</p>
+      <p class="why">${esc(p.summary)}</p>
+      ${p.url ? `<p><a class="link" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a></p>` : ''}
+      <div class="actions">
+        <button class="btn-primary" data-action="accept">Accept</button>
+        <button class="btn-secondary" data-action="change">Change</button>
+        <button class="btn-destructive" data-action="retire">Retire</button>
+      </div>
+      <input class="textresp" style="display:none" placeholder="What to change..." />`;
+  } else if (c.type === 'decision') {
+    const opts = (p.options || []).slice(0, 4);
+    body = `
+      <p class="title">${esc(p.question)}</p>
+      <div class="actions">
+        ${opts.map((o, i) => `<button class="btn-secondary" data-action="opt" data-value="${esc(o)}">${esc(o)}</button>`).join('')}
+        <button class="btn-secondary" data-action="other">Other</button>
+      </div>
+      <input class="textresp" style="display:none" placeholder="Your answer..." />`;
+  } else if (c.type === 'brief') {
+    body = `
+      <p class="title">${esc(p.title || 'Daily brief')}</p>
+      <p class="body-text">${esc(p.lines || '')}</p>
+      <div class="actions"><button class="btn-secondary" data-action="ack">Ack</button></div>`;
+  }
+  const div = document.createElement('div');
+  div.className = 'card' + (answered ? ' answered' : '');
+  div.innerHTML = `<span class="kind kind-${c.type}">${cardKindLabel(c.type)}</span>${body}` +
+    (answered ? `<div class="answer-tag">${esc(c.status)}${c.answer ? ': ' + esc(JSON.stringify(c.answer.value ?? c.answer)) : ''}</div>` : '');
+
+  if (!answered) {
+    div.querySelectorAll('button[data-action]').forEach(btn => {
+      btn.onclick = async () => {
+        const action = btn.dataset.action;
+        if (action === 'other' || action === 'change') {
+          const input = div.querySelector('.textresp');
+          input.style.display = 'block';
+          input.focus();
+          input.onkeydown = async (e) => {
+            if (e.key === 'Enter' && input.value.trim()) {
+              await answerCard(c.id, { action_id: action, value: input.value.trim() });
+            }
+          };
+          return;
+        }
+        const value = btn.dataset.value || action;
+        await answerCard(c.id, { action_id: action, value });
+      };
+    });
+  }
+  return div;
+}
+
+async function answerCard(id, answer) {
+  const { error } = await sb.from('pulse_cards').update({
+    status: answer.action_id === 'retire' || answer.action_id === 'skip' ? 'retired' : 'answered',
+    answer,
+    answered_at: new Date().toISOString()
+  }).eq('id', id);
+  if (error) { alert('Failed: ' + error.message); return; }
+  loadCards();
+}
+
+async function loadCards() {
+  const { data, error } = await sb.from('pulse_cards')
+    .select('*')
+    .eq('app_id', APP_ID)
+    .order('status', { ascending: true })
+    .order('created_at', { ascending: false })
+    .limit(100);
+  const main = document.getElementById('cards');
+  if (!main) return;
+  main.innerHTML = '';
+  if (error) { main.innerHTML = `<div class="empty">Load error: ${esc(error.message)}</div>`; return; }
+  const open = (data || []).filter(c => c.status === 'open');
+  const done = (data || []).filter(c => c.status !== 'open').slice(0, 15);
+  document.getElementById('count').textContent = open.length + ' open';
+  if (!data || data.length === 0) {
+    main.innerHTML = '<div class="empty">Nothing to manage right now.</div>';
+    return;
+  }
+  [...open, ...done].forEach(c => main.appendChild(renderCard(c)));
+}
+
+async function renderApp(session) {
+  app.innerHTML = `
+    <header><h1>Pulse Zero</h1><span class="count" id="count"></span></header>
+    <main id="cards"><div class="empty">Loading...</div></main>`;
+  await loadCards();
+  sb.channel('pulse_cards_live')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'pulse_cards' }, () => loadCards())
+    .subscribe();
+}
+
+async function boot() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) { renderApp(session); } else { renderLogin(); }
+  sb.auth.onAuthStateChange((event, session) => {
+    if (session) renderApp(session); else renderLogin();
+  });
+}
+boot();
+</script>
+</body>
+</html>
