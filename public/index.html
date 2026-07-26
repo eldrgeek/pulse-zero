@@ -532,34 +532,62 @@ boot();
     }
   }
 
+  // 2026-07-26 bugfix: getUserMedia() can hang forever — resolves neither
+  // resolve nor reject — even when navigator.permissions.query reports the
+  // mic as 'granted'. Reproduced live via CDP: Permissions API said
+  // 'granted', but getUserMedia() itself never settled (confirmed with a
+  // 5s race that always hit the timeout branch, never the getUserMedia
+  // branch). This matches a known Chromium/macOS behavior where the OS-level
+  // TCC microphone entitlement for Chrome is off/unavailable — the in-page
+  // permission state can say 'granted' while the actual OS mic grab never
+  // completes, and Chrome does not surface that as a rejected promise. This
+  // is what "Talk to Pulse spins forever" was: an unbounded await with no
+  // timeout, same failure mode already fixed for the Yeshie relay call
+  // above. Bounding it here turns an infinite spin into an actionable error.
+  function timeoutAfter(ms, message) {
+    return new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms));
+  }
+  function mediaTimeout(ms) {
+    return timeoutAfter(ms,
+      'Microphone request timed out after ' + (ms / 1000) + 's. If this keeps happening, ' +
+      'check System Settings -> Privacy & Security -> Microphone -> Google Chrome is ON ' +
+      '(a known Chrome/macOS bug lets getUserMedia hang forever instead of failing when this is off).');
+  }
+
   async function startTalk() {
     if (starting || conversation) return;
     starting = true;
     wantActive = true;
     setUi('connecting');
     try {
-      const pre = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const pre = await Promise.race([
+        navigator.mediaDevices.getUserMedia({ audio: true }),
+        mediaTimeout(8000),
+      ]);
       pre.getTracks().forEach((t) => t.stop());
       try { localStorage.setItem(CONSENT_KEY, '1'); } catch (_) {}
     } catch (err) {
       starting = false;
       wantActive = false;
-      setUi('error', 'Microphone access denied.');
+      setUi('error', (err && err.message) || 'Microphone access denied.');
       return;
     }
 
     try {
-      conversation = await Conversation.startSession({
-        agentId: AGENT_ID,
-        onConnect: () => { starting = false; setUi('listening'); },
-        onDisconnect: () => { conversation = null; if (wantActive) { wantActive = false; } setUi('off'); },
-        onError: (err) => { conversation = null; starting = false; wantActive = false; setUi('error', String(err)); },
-        onModeChange: ({ mode }) => {
-          if (mode === 'speaking') setUi('speaking');
-          else if (mode === 'thinking' || mode === 'processing') setUi('thinking');
-          else setUi('listening');
-        },
-      });
+      conversation = await Promise.race([
+        Conversation.startSession({
+          agentId: AGENT_ID,
+          onConnect: () => { starting = false; setUi('listening'); },
+          onDisconnect: () => { conversation = null; if (wantActive) { wantActive = false; } setUi('off'); },
+          onError: (err) => { conversation = null; starting = false; wantActive = false; setUi('error', String(err)); },
+          onModeChange: ({ mode }) => {
+            if (mode === 'speaking') setUi('speaking');
+            else if (mode === 'thinking' || mode === 'processing') setUi('thinking');
+            else setUi('listening');
+          },
+        }),
+        timeoutAfter(12000, 'ElevenLabs session setup timed out after 12s (agent unreachable or slow to connect).'),
+      ]);
     } catch (err) {
       starting = false;
       wantActive = false;
