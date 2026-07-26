@@ -9,7 +9,11 @@
   # var, which failed every git-triggered build (silently — prod was being kept
   # current by manual CLI deploys instead). Omitting just this key keeps scanning
   # on for everything else, including the service key, which must never ship here.
-  SECRETS_SCAN_OMIT_KEYS = "NEXT_PUBLIC_SUPABASE_ANON_KEY"
+  # Both aliases are needed: the scanner reports one name at a time, so omitting
+  # only NEXT_PUBLIC_SUPABASE_ANON_KEY just surfaced SUPABASE_ANON_KEY next.
+  # Paths stay scanned, so a service key committed into public/ would still fail
+  # the build — which is the check actually worth keeping.
+  SECRETS_SCAN_OMIT_KEYS = "NEXT_PUBLIC_SUPABASE_ANON_KEY,SUPABASE_ANON_KEY"
 
 [[headers]]
   for = "/*"
