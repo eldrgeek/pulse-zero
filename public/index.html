@@ -83,6 +83,24 @@
   @media (prefers-color-scheme: light) { .bounced-card { background: #fff; border-color: #e3e5e8; } }
   .bounced-card .title { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
   .bounced-card .reason { font-size: 12.5px; opacity: 0.7; }
+
+  /* ── Snooze ────────────────────────────────────────────────── */
+  .snoozed-card { padding: 10px 12px; border-radius: 10px; background: #16181b; border: 1px solid #26292d; margin-top: 8px; }
+  @media (prefers-color-scheme: light) { .snoozed-card { background: #fff; border-color: #e3e5e8; } }
+  .snoozed-card .title { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
+  .snoozed-card .until { font-size: 12.5px; opacity: 0.7; margin: 0 0 8px; }
+  .snooze-menu { display: flex; flex-direction: column; gap: 8px; }
+  .snooze-menu button { width: 100%; }
+  .count .snooze-count { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+
+  /* ── Comments ──────────────────────────────────────────────── */
+  .comments { margin-top: 10px; border-top: 1px solid #26292d; padding-top: 10px; }
+  @media (prefers-color-scheme: light) { .comments { border-top-color: #e3e5e8; } }
+  .comment-item { font-size: 13.5px; margin-bottom: 6px; line-height: 1.4; }
+  .comment-item .who { opacity: 0.55; font-size: 12px; margin-right: 6px; }
+  .comment-toggle { background: none; border: none; padding: 0; font-size: 13px; font-weight: 600; opacity: 0.7; cursor: pointer; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+  .comment-input-row { display: flex; gap: 8px; margin-top: 8px; }
+  .comment-input-row input { flex: 1; }
   .overlay-backdrop {
     position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 50;
     display: flex; align-items: center; justify-content: center; padding: 20px;
@@ -313,6 +331,119 @@ async function bounceByMike(c) {
   loadCards();
 }
 
+// ── Snooze ──────────────────────────────────────────────────────────
+// A snoozed card stays status='open' — snoozing is a visibility window on
+// top of open, not a separate status — so nothing bypasses the existing
+// answer/bounce/resolve flows. isSnoozedActive() is the single source of
+// truth both the default-view filter and the "N snoozed" affordance use.
+function isSnoozedActive(c) {
+  return !!c.snoozed_until && new Date(c.snoozed_until) > new Date();
+}
+
+function snoozePresets() {
+  const now = new Date();
+  const tonight = new Date(now);
+  tonight.setHours(20, 0, 0, 0);
+  if (tonight <= now) { tonight.setTime(now.getTime() + 3 * 60 * 60 * 1000); } // already past 8pm — push 3h out instead
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(8, 0, 0, 0);
+  const nextWeek = new Date(now);
+  nextWeek.setDate(nextWeek.getDate() + 7);
+  nextWeek.setHours(8, 0, 0, 0);
+  return [
+    { label: 'Tonight', at: tonight },
+    { label: 'Tomorrow morning', at: tomorrow },
+    { label: 'Next week', at: nextWeek },
+  ];
+}
+
+async function snoozeCard(id, until) {
+  const { error } = await sb.from('pulse_cards').update({ snoozed_until: until.toISOString() }).eq('id', id);
+  if (error) { alert('Failed: ' + error.message); return; }
+  loadCards();
+}
+
+async function unsnoozeCard(id) {
+  const { error } = await sb.from('pulse_cards').update({ snoozed_until: null }).eq('id', id);
+  if (error) { alert('Failed: ' + error.message); return; }
+  loadCards();
+}
+
+function openSnoozeMenu(c) {
+  const presets = snoozePresets();
+  const buttons = presets.map((pr, i) =>
+    `<button class="btn-secondary" data-snooze-idx="${i}">${esc(pr.label)}</button>`
+  ).join('');
+  const backdrop = showOverlay(`<h2>Snooze until…</h2><div class="snooze-menu">${buttons}</div>`);
+  backdrop.querySelectorAll('[data-snooze-idx]').forEach(btn => {
+    btn.onclick = async () => {
+      const pr = presets[Number(btn.dataset.snoozeIdx)];
+      backdrop.remove();
+      await snoozeCard(c.id, pr.at);
+    };
+  });
+}
+
+function renderSnoozedCard(c) {
+  const p = c.payload || {};
+  const title = p.title || p.artifact_name || p.question || 'Untitled card';
+  const until = new Date(c.snoozed_until);
+  const div = document.createElement('div');
+  div.className = 'snoozed-card';
+  div.innerHTML = `
+    <p class="title">${esc(title)}</p>
+    <p class="until">Reopens ${esc(until.toLocaleString())}</p>
+    <div class="actions"><button class="btn-secondary" data-action="unsnooze">Un-snooze now</button></div>`;
+  div.querySelector('[data-action="unsnooze"]').onclick = () => unsnoozeCard(c.id);
+  return div;
+}
+
+// ── Comments ────────────────────────────────────────────────────────
+// Commenting never touches status — see FEATURE_2 in README. Comments are
+// fetched embedded on each card via a PostgREST FK join (pulse_card_comments
+// has a FK to pulse_cards), so no extra round trip per card.
+async function postComment(cardId, body, div) {
+  const { error } = await sb.from('pulse_card_comments').insert({ card_id: cardId, author: 'mike', body });
+  if (error) { alert('Failed: ' + error.message); return; }
+  loadCards();
+}
+
+function renderComments(c) {
+  const comments = (c.pulse_card_comments || []).slice().sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  const list = comments.map(cm => `
+    <div class="comment-item"><span class="who">${esc(cm.author)} · ${esc(new Date(cm.created_at).toLocaleString())}</span>${esc(cm.body)}</div>
+  `).join('');
+  const toggleLabel = comments.length ? `Comments (${comments.length})` : 'Add a comment';
+  return `
+    <div class="comments">
+      <button class="comment-toggle" data-action="toggle-comments">${toggleLabel}</button>
+      <div class="comment-body" style="display:none;">
+        ${list}
+        <div class="comment-input-row">
+          <input class="textresp comment-input" placeholder="Add a comment..." />
+          <button class="btn-secondary" data-action="send-comment">Send</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function wireComments(div, c) {
+  const toggle = div.querySelector('[data-action="toggle-comments"]');
+  const body = div.querySelector('.comment-body');
+  if (!toggle || !body) return;
+  toggle.onclick = () => { body.style.display = body.style.display === 'none' ? 'block' : 'none'; };
+  const input = div.querySelector('.comment-input');
+  const send = div.querySelector('[data-action="send-comment"]');
+  const submit = () => {
+    const val = input.value.trim();
+    if (!val) return;
+    postComment(c.id, val, div);
+  };
+  send.onclick = submit;
+  input.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+}
+
 function renderCard(c) {
   const p = c.payload || {};
   const answered = c.status !== 'open';
@@ -332,6 +463,7 @@ function renderCard(c) {
         ${guideBtn}
         ${yeshieBtn}
         <button class="btn-primary" data-action="done">Done</button>
+        <button class="btn-secondary" data-action="snooze">Snooze</button>
         <button class="btn-secondary" data-action="not-mine">Not mine</button>
       </div>`;
   } else if (c.type === 'verdict') {
@@ -342,6 +474,7 @@ function renderCard(c) {
       <div class="actions">
         <button class="btn-primary" data-action="accept">Accept</button>
         <button class="btn-secondary" data-action="change">Change</button>
+        <button class="btn-secondary" data-action="snooze">Snooze</button>
         <button class="btn-destructive" data-action="retire">Retire</button>
       </div>
       <input class="textresp" style="display:none" placeholder="What to change..." />`;
@@ -352,18 +485,23 @@ function renderCard(c) {
       <div class="actions">
         ${opts.map((o, i) => `<button class="btn-secondary" data-action="opt" data-value="${esc(o)}">${esc(o)}</button>`).join('')}
         <button class="btn-secondary" data-action="other">Other</button>
+        <button class="btn-secondary" data-action="snooze">Snooze</button>
       </div>
       <input class="textresp" style="display:none" placeholder="Your answer..." />`;
   } else if (c.type === 'brief') {
     body = `
       <p class="title">${esc(p.title || 'Daily brief')}</p>
       <p class="body-text">${esc(p.lines || '')}</p>
-      <div class="actions"><button class="btn-secondary" data-action="ack">Ack</button></div>`;
+      <div class="actions">
+        <button class="btn-secondary" data-action="ack">Ack</button>
+        <button class="btn-secondary" data-action="snooze">Snooze</button>
+      </div>`;
   }
   const div = document.createElement('div');
   div.className = 'card' + (answered ? ' answered' : '');
   div.innerHTML = `<span class="kind kind-${c.type}">${cardKindLabel(c.type)}</span>${body}` +
-    (answered ? `<div class="answer-tag">${esc(c.status)}${c.answer ? ': ' + esc(JSON.stringify(c.answer.value ?? c.answer)) : ''}${c.resolved_note ? ': ' + esc(c.resolved_note) : ''}</div>` : '');
+    (answered ? `<div class="answer-tag">${esc(c.status)}${c.answer ? ': ' + esc(JSON.stringify(c.answer.value ?? c.answer)) : ''}${c.resolved_note ? ': ' + esc(c.resolved_note) : ''}</div>` : '') +
+    renderComments(c);
 
   if (!answered) {
     div.querySelectorAll('button[data-action]').forEach(btn => {
@@ -375,6 +513,7 @@ function renderCard(c) {
         if (action === 'guide') { guideMeSteps(c.yeshie_steps); return; }
         if (action === 'yeshie-run') { await runYeshieTask(c.yeshie_task, btn); return; }
         if (action === 'not-mine') { await bounceByMike(c); return; }
+        if (action === 'snooze') { openSnoozeMenu(c); return; }
         if (action === 'other' || action === 'change') {
           const input = div.querySelector('.textresp');
           input.style.display = 'block';
@@ -391,6 +530,7 @@ function renderCard(c) {
       };
     });
   }
+  wireComments(div, c);
   return div;
 }
 
@@ -415,7 +555,7 @@ async function answerCard(id, answer) {
 
 async function loadCards() {
   const { data, error } = await sb.from('pulse_cards')
-    .select('*')
+    .select('*, pulse_card_comments(*)')
     .eq('app_id', APP_ID)
     .order('status', { ascending: true })
     .order('created_at', { ascending: false })
@@ -424,10 +564,15 @@ async function loadCards() {
   if (!main) return;
   main.innerHTML = '';
   if (error) { main.innerHTML = `<div class="empty">Load error: ${esc(error.message)}</div>`; return; }
-  const open = (data || []).filter(c => c.status === 'open');
+  // "open" = the default view: status open AND not currently snoozed.
+  // Snoozed-active cards are pulled out into their own section so nothing
+  // silently vanishes — see isSnoozedActive() / renderSnoozedCard().
+  const open = (data || []).filter(c => c.status === 'open' && !isSnoozedActive(c));
+  const snoozed = (data || []).filter(c => c.status === 'open' && isSnoozedActive(c));
   const bounced = (data || []).filter(c => c.status === 'bounced').slice(0, 30);
   const done = (data || []).filter(c => c.status !== 'open' && c.status !== 'bounced').slice(0, 15);
-  document.getElementById('count').textContent = open.length + ' open';
+  document.getElementById('count').innerHTML = esc(open.length + ' open') +
+    (snoozed.length ? ` · <span class="snooze-count" id="snooze-count-badge">${esc(snoozed.length + ' snoozed')}</span>` : '');
   if (!data || data.length === 0) {
     main.innerHTML = '<div class="empty">Nothing to manage right now.</div>';
     return;
@@ -436,6 +581,14 @@ async function loadCards() {
     main.innerHTML = '<div class="empty">Nothing open right now.</div>';
   } else {
     open.forEach(c => main.appendChild(renderCard(c)));
+  }
+  if (snoozed.length) {
+    const details = document.createElement('details');
+    details.className = 'bounced-section';
+    details.id = 'snoozed-section';
+    details.innerHTML = `<summary>Snoozed — ${snoozed.length}</summary>`;
+    snoozed.forEach(c => details.appendChild(renderSnoozedCard(c)));
+    main.appendChild(details);
   }
   if (done.length) {
     const details = document.createElement('details');
@@ -451,6 +604,13 @@ async function loadCards() {
     bounced.forEach(c => details.appendChild(renderBouncedCard(c)));
     main.appendChild(details);
   }
+  const countBadge = document.getElementById('snooze-count-badge');
+  if (countBadge) {
+    countBadge.onclick = () => {
+      const sec = document.getElementById('snoozed-section');
+      if (sec) { sec.open = true; sec.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    };
+  }
 }
 
 async function renderApp(session) {
@@ -460,6 +620,7 @@ async function renderApp(session) {
   await loadCards();
   sb.channel('pulse_cards_live')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'pulse_cards' }, () => loadCards())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'pulse_card_comments' }, () => loadCards())
     .subscribe();
 }
 

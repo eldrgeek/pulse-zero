@@ -64,11 +64,42 @@ List/poll:
 
 ```bash
 bin/pulse-push --list-open
-bin/pulse-push --list-answers            # also mirrors newly-answered cards into SOMA/board/inbox/
+bin/pulse-push --list-answers            # also mirrors newly-answered cards (+ their comments) into SOMA/board/inbox/
 bin/pulse-push --list-bounced
+bin/pulse-push --list-snoozed            # cards hidden from the default view until snoozed_until passes
 ```
 
 `PULSE_ZERO_SUPABASE_URL` defaults to the shared SOMA Auth project; override only if migrating.
+
+### Snooze (2026-07-26)
+
+Mike can defer a card ("push it off to later") without resolving or bouncing it. It stays `status='open'` the whole time — snooze is a visibility window (`pulse_cards.snoozed_until timestamptz`), not a status — so the board's answer/bounce/resolve flows are untouched. A snoozed card disappears from the default view and reappears automatically once `snoozed_until` passes, or immediately if Mike taps "Un-snooze now" in the collapsed **Snoozed — N** section (always present when anything is snoozed — nothing vanishes silently).
+
+**Re-pushing a snoozed card is snooze-aware.** If a session re-pushes the same `--key` while the card is still snoozed:
+- **Same payload/yeshie fields as what's already on the card** → the push is a no-op retry; it stays snoozed. Printed: `card <id> is snoozed until <ts>; re-push carried no new information — leaving it snoozed`.
+- **Different payload/yeshie fields** → treated as genuinely new information; `snoozed_until` is cleared so Mike sees it now. Printed: `card <id> had new information on re-push — woke it from snooze`.
+
+This means a recurring nightly job that pushes an unchanged card won't un-snooze it, but a job that pushes a materially updated card will.
+
+### Comments (2026-07-26)
+
+Mike can comment on any card from the board UI (a **Comments (N)** / **Add a comment** disclosure on every card, open or done) without changing its status — commenting is purely additive (table `public.pulse_card_comments`, FK'd to `pulse_cards.id`, own RLS, own realtime publication entry). The board fetches comments embedded via PostgREST's FK-based join (`pulse_cards?select=*,pulse_card_comments(*)`), so there's no extra round trip.
+
+**Session-facing return path — extends the existing `--list-answers` / `sync_answers_to_board` mirror rather than inventing a parallel one.** Two ways to collect comments on cards you pushed:
+
+```bash
+# Targeted: only cards from your --source that have at least one comment, comments embedded.
+bin/pulse-push --list-comments --source "ccd:<your session title>"
+
+# Broad: the existing answered-card mirror into SOMA/board/inbox/, extended so it
+# also (a) includes an open card if it has new comments (comments don't require a
+# status change to be worth syncing) and (b) always rewrites the file (not just on
+# first sync) so a comment added after a card was already answered/synced still shows up.
+bin/pulse-push --list-answers
+cat ~/Projects/SOMA/board/inbox/pulse-zero-<card-id>.json   # now includes a "comments" array
+```
+
+Sessions can also post their own comment (e.g. an acknowledgment) via `bin/pulse-push comment --id <card-id> --body "..." [--author <name>]` — `--author` defaults to `mike` since that's the normal path (the board UI), but any session can attribute its own.
 
 ## Board UI (public/index.html)
 
@@ -80,8 +111,11 @@ Action cards render as one line (title) + a button row:
 - **Yeshie: do it — I'll watch** — only if the card has `yeshie_task` AND the board URL has `?yeshie=1`. See wiring status below.
 - **Done** — marks answered (existing flow).
 - **Not mine** — Mike bounces his own card (`status=bounced`, `bounce_reason="Not mine (Mike)"`); shows up in Tower's Bounced (RSI) section.
+- **Snooze** — every card type (action/verdict/decision/brief) has this. Opens a preset picker (Tonight / Tomorrow morning / Next week, computed client-side in Mike's local time); the card leaves the default view until then. See "Snooze" under Pushing cards above for the CLI-side dedup interaction.
 
-VERDICT/DECISION/BRIEF cards are unchanged. SOMA Auth magic-link allowlist is unchanged.
+Every card (including answered/bounced/done ones) has a **Comments** disclosure at the bottom — see "Comments" above. Commenting never changes status.
+
+VERDICT/DECISION/BRIEF cards are otherwise unchanged. SOMA Auth magic-link allowlist is unchanged.
 
 ## Yeshie wiring status (2026-07-26, confirmed live)
 
@@ -119,7 +153,9 @@ A small admin view surfacing this list on the board is a reasonable next pass, n
 
 ## Schema
 
-`public.pulse_cards(id, app_id, type, payload jsonb, status, answer jsonb, created_by, created_at, answered_at, bounce_reason text, resolved_note text, yeshie_steps text, yeshie_task jsonb, dedupe_key text)`. `status` check constraint: `open | answered | retired | bounced | resolved`. RLS: service_role full access; `mw@mike-wolf.com` can select/update its own app_id rows. Migration SQL is not checked in (ad hoc via Supabase Management API) — see git history / session transcript if it needs to be replayed. 2026-07-26 ALTERs (additive, non-destructive): added `bounce_reason`, `resolved_note`, `yeshie_steps`, `yeshie_task` columns; widened the `status` check constraint to include `bounced` and `resolved`. 2026-07-26 (bugfix pass, later same day): added `dedupe_key text` + a partial index `(app_id, dedupe_key) where status='open' and dedupe_key is not null`; also added a new standalone table `public.pulse_zero_feedback(id, site, page, url, area, text, name, email, conversation jsonb, status, created_at)` for the §8 feedback widget (RLS: service_role full access, `mw@mike-wolf.com` select-only).
+`public.pulse_cards(id, app_id, type, payload jsonb, status, answer jsonb, created_by, created_at, answered_at, bounce_reason text, resolved_note text, yeshie_steps text, yeshie_task jsonb, dedupe_key text, snoozed_until timestamptz)`. `status` check constraint: `open | answered | retired | bounced | resolved`. RLS: service_role full access; `mw@mike-wolf.com` can select/update its own app_id rows. Migration SQL is not checked in (ad hoc via Supabase Management API) — see git history / session transcript if it needs to be replayed. 2026-07-26 ALTERs (additive, non-destructive): added `bounce_reason`, `resolved_note`, `yeshie_steps`, `yeshie_task` columns; widened the `status` check constraint to include `bounced` and `resolved`. 2026-07-26 (bugfix pass, later same day): added `dedupe_key text` + a partial index `(app_id, dedupe_key) where status='open' and dedupe_key is not null`; also added a new standalone table `public.pulse_zero_feedback(id, site, page, url, area, text, name, email, conversation jsonb, status, created_at)` for the §8 feedback widget (RLS: service_role full access, `mw@mike-wolf.com` select-only).
+
+**2026-07-26 (snooze + comments pass):** added `pulse_cards.snoozed_until timestamptz` (nullable, additive). Added new table `public.pulse_card_comments(id uuid pk, card_id uuid references pulse_cards(id) on delete cascade, author text default 'mike', body text not null, created_at timestamptz default now())`, RLS mirrors `pulse_cards` (service_role full access; `mw@mike-wolf.com` select/insert), added to the `supabase_realtime` publication, indexed on `card_id`. This time the migration **is** checked in: `supabase/migrations/20260726_snooze_and_comments.sql` (still applied ad hoc via the Management API, not via `supabase db push` — the file exists purely so the change is reproducible/reviewable).
 
 ## Automated smoke test
 

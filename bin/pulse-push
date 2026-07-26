@@ -9,9 +9,30 @@ Usage:
   pulse-push brief    --title T --lines L
   pulse-push bounce   --id ID --reason "..."
   pulse-push resolve  --id ID --note "..."
+  pulse-push comment  --id ID --body "..." [--author mike]
   pulse-push --list-open
   pulse-push --list-answers [--since ISO8601]
   pulse-push --list-bounced
+  pulse-push --list-snoozed
+  pulse-push --list-comments [--source S]
+
+Snooze (columns: pulse_cards.snoozed_until). A snoozed card is still
+`status='open'` — snoozing is a visibility window, not a status — but is
+hidden from the default board view until snoozed_until passes. Re-pushing a
+snoozed card with the same --key does NOT wake it unless the payload is
+genuinely different from what's already on the card (title/why/steps/url
+changed, or yeshie fields changed): identical re-pushes leave it snoozed,
+changed content clears snoozed_until so Mike sees the new information now.
+
+Comments (table: pulse_card_comments, FK card_id -> pulse_cards.id).
+Commenting never changes a card's status. The session-facing command to
+collect Mike's comments on cards you pushed:
+
+    bin/pulse-push --list-comments --source <the --source you used to push>
+
+`--list-answers` also continues to mirror cards into SOMA/board/inbox/
+(now including a `comments` array per card) for the passive-file pickup
+path that already existed for answered/bounced/resolved cards.
 
 Card contract (action cards): one imperative line, <=60 chars, a clickable
 --url is strongly encouraged. See ~/Projects/_estate/specs/tower-steward-v0.md
@@ -132,8 +153,38 @@ def push(args, key, url):
             params={"app_id": f"eq.{APP_ID}", "status": "eq.open", "dedupe_key": f"eq.{dedupe_key}", "limit": "1"},
         )
         if existing:
-            card_id = existing[0]["id"]
+            existing_card = existing[0]
+            card_id = existing_card["id"]
             patch_body = {k: v for k, v in row.items() if k not in ("app_id", "status")}
+
+            # Snooze-aware re-push: a snoozed card re-pushed with the same
+            # --key should NOT jump back into view just because a session
+            # retried/re-ran a job, but genuinely new information (payload,
+            # yeshie steps/task changed) should still surface now. Compare
+            # only the content fields, not bookkeeping (dedupe_key itself).
+            snoozed_until = existing_card.get("snoozed_until")
+            is_snoozed = bool(snoozed_until) and _parse_iso(snoozed_until) > _now_dt()
+            if is_snoozed:
+                content_keys = ("payload", "yeshie_steps", "yeshie_task")
+                same_content = all(
+                    existing_card.get(k) == row.get(k) for k in content_keys if k in row or k in existing_card
+                )
+                if same_content:
+                    print(
+                        f"card {card_id} is snoozed until {snoozed_until}; re-push carried no new "
+                        f"information — leaving it snoozed (key={dedupe_key})"
+                    )
+                    return existing_card
+                else:
+                    patch_body["snoozed_until"] = None
+                    result = sb_request("PATCH", "pulse_cards", key, url, body=patch_body, params={"id": f"eq.{card_id}"})
+                    card = result[0] if isinstance(result, list) else result
+                    print(
+                        f"card {card_id} had new information on re-push — woke it from snooze "
+                        f"(was until {snoozed_until}, key={dedupe_key})"
+                    )
+                    return card
+
             result = sb_request("PATCH", "pulse_cards", key, url, body=patch_body, params={"id": f"eq.{card_id}"})
             card = result[0] if isinstance(result, list) else result
             print(f"updated existing {ctype} card {card.get('id')} (key={dedupe_key})")
@@ -197,35 +248,109 @@ def load_yeshie_task(value):
         return {"recipe_path": value}
 
 
-def list_cards(status_filter, key, url, since=None):
+def list_cards(status_filter, key, url, since=None, snoozed_only=False, print_json=True):
     params = {"app_id": f"eq.{APP_ID}", "order": "created_at.desc", "limit": "200"}
     if status_filter:
         params["status"] = f"eq.{status_filter}"
     if since:
         params["answered_at"] = f"gte.{since}"
+    if snoozed_only:
+        params["status"] = "eq.open"
+        params["snoozed_until"] = f"gt.{_now_iso()}"
     rows = sb_request("GET", "pulse_cards", key, url, params=params)
-    print(json.dumps(rows, indent=2))
+    if print_json:
+        print(json.dumps(rows, indent=2))
     return rows
 
 
-def sync_answers_to_board(rows):
+def fetch_comments_by_card(card_ids, key, url):
+    """One batched GET for all comments across the given card ids, grouped
+    by card_id. Avoids N+1 requests when syncing/listing many cards."""
+    by_card = {cid: [] for cid in card_ids}
+    if not card_ids:
+        return by_card
+    id_list = ",".join(card_ids)
+    rows = sb_request(
+        "GET", "pulse_card_comments", key, url,
+        params={"card_id": f"in.({id_list})", "order": "created_at.asc", "limit": "1000"},
+    )
+    for c in rows or []:
+        by_card.setdefault(c["card_id"], []).append(c)
+    return by_card
+
+
+def comment(args, key, url):
+    if not args.body or not args.body.strip():
+        sys.stderr.write("error: --body is required for comment\n")
+        sys.exit(1)
+    existing = sb_request(
+        "GET", "pulse_cards", key, url,
+        params={"id": f"eq.{args.id}", "limit": "1"},
+    )
+    if not existing:
+        sys.stderr.write(f"error: no card matched id {args.id}\n")
+        sys.exit(1)
+    row = {"card_id": args.id, "author": args.author or "mike", "body": args.body}
+    result = sb_request("POST", "pulse_card_comments", key, url, body=row)
+    c = result[0] if isinstance(result, list) else result
+    print(f"commented on card {args.id}: {c.get('id')}")
+    return c
+
+
+def sync_answers_to_board(rows, key, url):
+    """Mirror cards into SOMA/board/inbox/ for the passive-file pickup path.
+    A card is synced if it's no longer open (answered/bounced/resolved/
+    retired) OR it has at least one comment — commenting never changes
+    status, so an open card can still have new information a session needs
+    to see. Unlike the original answered-only version, this always
+    (re)writes the file rather than skipping when it already exists, since a
+    comment can land on a card *after* it was first synced (e.g. after it
+    was already answered) and the session needs the updated comment list on
+    its next poll."""
     os.makedirs(BOARD_INBOX, exist_ok=True)
+    comments_by_card = fetch_comments_by_card([r["id"] for r in rows], key, url)
+    synced = 0
     for r in rows:
-        if r.get("status") == "open":
+        comments = comments_by_card.get(r["id"], [])
+        if r.get("status") == "open" and not comments:
             continue
         card_file = os.path.join(BOARD_INBOX, f"pulse-zero-{r['id']}.json")
-        if os.path.exists(card_file):
-            continue
         with open(card_file, "w") as f:
             json.dump({
                 "source": "pulse-zero",
                 "card_id": r["id"],
                 "type": r["type"],
+                "created_by": r.get("created_by"),
                 "payload": r["payload"],
                 "status": r["status"],
                 "answer": r.get("answer"),
                 "answered_at": r.get("answered_at"),
+                "comments": comments,
             }, f, indent=2)
+        synced += 1
+    print(f"synced {synced} card(s) to {BOARD_INBOX}", file=sys.stderr)
+
+
+def list_comments(args, key, url):
+    """Session-facing command: `pulse-push --list-comments --source <src>`.
+    Prints (JSON) every card from that source that has at least one
+    comment, each with its comments embedded — this is the exact command a
+    session should run to collect Mike's comments on cards it pushed."""
+    params = {"app_id": f"eq.{APP_ID}", "order": "created_at.desc", "limit": "200"}
+    if getattr(args, "source", None):
+        params["created_by"] = f"eq.{args.source}"
+    rows = sb_request("GET", "pulse_cards", key, url, params=params)
+    comments_by_card = fetch_comments_by_card([r["id"] for r in rows or []], key, url)
+    out = []
+    for r in rows or []:
+        cs = comments_by_card.get(r["id"], [])
+        if not cs:
+            continue
+        r = dict(r)
+        r["comments"] = cs
+        out.append(r)
+    print(json.dumps(out, indent=2))
+    return out
 
 
 def bounce(args, key, url):
@@ -258,6 +383,16 @@ def resolve(args, key, url):
 def _now_iso():
     import datetime
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _now_dt():
+    import datetime
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _parse_iso(s):
+    import datetime
+    return datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
 def main():
@@ -303,9 +438,17 @@ def main():
     rs.add_argument("--id", required=True)
     rs.add_argument("--note", required=True)
 
+    cm = sub.add_parser("comment")
+    cm.add_argument("--id", required=True)
+    cm.add_argument("--body", required=True)
+    cm.add_argument("--author", default="mike", help="default 'mike' — this is normally added via the board UI")
+
     p.add_argument("--list-open", action="store_true")
     p.add_argument("--list-answers", action="store_true")
     p.add_argument("--list-bounced", action="store_true")
+    p.add_argument("--list-snoozed", action="store_true", help="cards currently open but hidden from the default view until snoozed_until passes")
+    p.add_argument("--list-comments", action="store_true", help="session-facing: cards (optionally filtered by --source) that have comments, with comments embedded")
+    p.add_argument("--source", help="filter for --list-comments")
     p.add_argument("--since")
 
     args = p.parse_args()
@@ -320,14 +463,19 @@ def main():
         list_cards("open", key, url)
     elif args.list_bounced:
         list_cards("bounced", key, url)
+    elif args.list_snoozed:
+        list_cards(None, key, url, snoozed_only=True)
+    elif args.list_comments:
+        list_comments(args, key, url)
     elif args.list_answers:
         rows = list_cards(None, key, url, since=args.since)
-        answered = [r for r in rows if r.get("status") != "open"]
-        sync_answers_to_board(answered)
+        sync_answers_to_board(rows, key, url)
     elif args.type == "bounce":
         bounce(args, key, url)
     elif args.type == "resolve":
         resolve(args, key, url)
+    elif args.type == "comment":
+        comment(args, key, url)
     elif args.type:
         push(args, key, url)
     else:
