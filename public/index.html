@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>Pulse Zero</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link rel="stylesheet" href="/vendor/soma-feedback/soma-feedback.css">
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
@@ -58,7 +59,11 @@
   .btn-destructive { background: #3a1414; color: #ff8080; }
   input.textresp {
     width: 100%; font: inherit; font-size: 14px; padding: 10px 12px; border-radius: 10px;
-    border: 1px solid #35383d; background: #0e1013; color: inherit; margin-top: 8px;
+    border: 1px solid #35383d; background: #0e1013; color: #f0f2f4; margin-top: 8px;
+    -webkit-appearance: none; appearance: none; -webkit-text-fill-color: #f0f2f4;
+  }
+  @media (prefers-color-scheme: light) {
+    input.textresp { background: #fff; color: #14171a; border-color: #cfd3d8; -webkit-text-fill-color: #14171a; }
   }
   .answered { opacity: 0.45; }
   .answered .actions { display: none; }
@@ -94,12 +99,15 @@
   @media (prefers-color-scheme: light) { .overlay-close { background: #eceef1; color: #14171a; } }
   .login { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
   .login-box { max-width: 360px; width: 100%; text-align: center; }
-  .login-box input { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #35383d; background: #16181b; color: inherit; font-size: 15px; margin: 16px 0 10px; }
+  .login-box input { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #35383d; background: #16181b; color: #f0f2f4; font-size: 15px; margin: 16px 0 10px; }
+  @media (prefers-color-scheme: light) {
+    .login-box input { background: #fff; color: #14171a; border-color: #cfd3d8; }
+  }
   .login-box button { width: 100%; background: #2f6fed; color: white; padding: 12px; }
   .muted { opacity: 0.55; font-size: 13px; }
-  #feedback-chip { position: fixed; bottom: 82px; right: 14px; z-index: 20; }
-  #feedback-chip button { background: #26292d; color: #e8eaed; border-radius: 999px; padding: 8px 14px; font-size: 13px; }
-  @media (prefers-color-scheme: light) { #feedback-chip button { background: #eceef1; color: #14171a; } }
+  /* soma-feedback chip (§8) sits bottom-left by default; nudge it above the
+     persistent #talk-bar so the two don't overlap. */
+  .soma-feedback-root { bottom: 82px; }
 
   /* ── Talk bar (persistent bottom bar) ─────────────────────── */
   #talk-bar {
@@ -153,7 +161,6 @@
 <body>
 
 <div id="app"></div>
-<div id="feedback-chip"><button onclick="location.href='mailto:mw@mike-wolf.com?subject=Pulse%20Zero%20feedback'">feedback</button></div>
 
 <div id="talk-bar">
   <div id="talk-orb-wrap"><div id="talk-orb" class="off"></div></div>
@@ -425,7 +432,18 @@ async function loadCards() {
     main.innerHTML = '<div class="empty">Nothing to manage right now.</div>';
     return;
   }
-  [...open, ...done].forEach(c => main.appendChild(renderCard(c)));
+  if (!open.length) {
+    main.innerHTML = '<div class="empty">Nothing open right now.</div>';
+  } else {
+    open.forEach(c => main.appendChild(renderCard(c)));
+  }
+  if (done.length) {
+    const details = document.createElement('details');
+    details.className = 'bounced-section';
+    details.innerHTML = `<summary>Recently done — ${done.length}</summary>`;
+    done.forEach(c => details.appendChild(renderCard(c)));
+    main.appendChild(details);
+  }
   if (bounced.length) {
     const details = document.createElement('details');
     details.className = 'bounced-section';
@@ -583,5 +601,15 @@ boot();
     startTalk();
   }
 </script>
+
+<!-- SOMA-APP-STANDARD §8 — own-auth adoption path (§15 gotcha): Pulse Zero has
+     its own Netlify function backend, so this points at /.netlify/functions/feedback
+     (public.pulse_zero_feedback table) rather than the shared VPS feedback-svc.
+     data-no-google: this origin isn't registered on the shared Google OAuth client. -->
+<script src="/vendor/soma-feedback/soma-feedback.js"
+        data-site="pulse-zero"
+        data-endpoint="/.netlify/functions/feedback"
+        data-no-google
+        defer></script>
 </body>
 </html>

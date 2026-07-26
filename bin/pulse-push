@@ -26,6 +26,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 import urllib.request
 
 DEFAULT_URL = "https://omfwcodoimjmbrhssvfl.supabase.co"
@@ -43,7 +44,7 @@ NON_IMPERATIVE_STARTS = (
 def sb_request(method, path, key, url, body=None, params=None):
     full = f"{url}/rest/v1/{path}"
     if params:
-        full += "?" + "&".join(f"{k}={v}" for k, v in params.items())
+        full += "?" + "&".join(f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in params.items())
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(full, data=data, method=method)
     req.add_header("apikey", key)
@@ -103,23 +104,79 @@ def push(args, key, url):
     elif ctype == "brief":
         payload = {"title": args.title, "lines": args.lines}
 
+    dedupe_key = getattr(args, "key", None)
+    source = args.source or "unknown"
+
     row = {
         "app_id": APP_ID,
         "type": ctype,
         "payload": payload,
-        "created_by": args.source or "unknown",
+        "created_by": source,
         "status": "open",
     }
+    if dedupe_key:
+        row["dedupe_key"] = dedupe_key
     if ctype == "action":
         if getattr(args, "yeshie_steps", None):
             row["yeshie_steps"] = args.yeshie_steps
         yt = getattr(args, "yeshie_task", None)
         if yt:
             row["yeshie_task"] = load_yeshie_task(yt)
+
+    # ── Dedup path 1: explicit --key. Mirrors pulse-enqueue's "replace same
+    # key" semantics — an OPEN card with the same dedupe_key gets updated in
+    # place instead of a new row being inserted.
+    if dedupe_key:
+        existing = sb_request(
+            "GET", "pulse_cards", key, url,
+            params={"app_id": f"eq.{APP_ID}", "status": "eq.open", "dedupe_key": f"eq.{dedupe_key}", "limit": "1"},
+        )
+        if existing:
+            card_id = existing[0]["id"]
+            patch_body = {k: v for k, v in row.items() if k not in ("app_id", "status")}
+            result = sb_request("PATCH", "pulse_cards", key, url, body=patch_body, params={"id": f"eq.{card_id}"})
+            card = result[0] if isinstance(result, list) else result
+            print(f"updated existing {ctype} card {card.get('id')} (key={dedupe_key})")
+            return card
+
+    # ── Dedup path 2: safety net for action cards pushed without --key.
+    # Multiple sessions/Tower pushing near-identical cards is the more likely
+    # real-world duplicate cause; skip (don't insert) and warn on stderr
+    # rather than silently duplicating.
+    if ctype == "action" and not dedupe_key:
+        dup = find_duplicate_action(source, args.title, key, url)
+        if dup:
+            sys.stderr.write(
+                f"warn: skipping insert — an OPEN action card with the same title+source "
+                f"already exists: {dup.get('id')} (title={args.title!r}, source={source!r}).\n"
+                f"  Use --key on anything a session might push more than once.\n"
+            )
+            print(f"skipped duplicate; existing card {dup.get('id')}")
+            return dup
+
     result = sb_request("POST", "pulse_cards", key, url, body=row)
     card = result[0] if isinstance(result, list) else result
     print(f"pushed {ctype} card {card.get('id')}")
     return card
+
+
+def find_duplicate_action(source, title, key, url):
+    """Case-insensitive title match among this source's OPEN action cards.
+    Client-side compare (not a payload->>title filter) to avoid PostgREST
+    jsonb-path URL-encoding edge cases."""
+    if not title:
+        return None
+    rows = sb_request(
+        "GET", "pulse_cards", key, url,
+        params={"app_id": f"eq.{APP_ID}", "status": "eq.open", "type": "eq.action",
+                "created_by": f"eq.{source}", "limit": "50"},
+    )
+    norm = title.strip().lower()
+    for r in rows or []:
+        existing_title = (r.get("payload") or {}).get("title", "")
+        if existing_title.strip().lower() == norm:
+            return r
+    return None
 
 
 def load_yeshie_task(value):
@@ -213,6 +270,7 @@ def main():
     a.add_argument("--steps")
     a.add_argument("--url")
     a.add_argument("--source")
+    a.add_argument("--key", help="stable dedup key — replaces any existing OPEN card with the same key instead of inserting a new one")
     a.add_argument("--yeshie-steps", dest="yeshie_steps",
                     help="newline-separated human steps rendered as an overlay checklist ('Guide me')")
     a.add_argument("--yeshie-task", dest="yeshie_task",
@@ -223,16 +281,19 @@ def main():
     v.add_argument("--url", required=True)
     v.add_argument("--summary", required=True)
     v.add_argument("--source")
+    v.add_argument("--key", help="stable dedup key — replaces any existing OPEN card with the same key instead of inserting a new one")
 
     d = sub.add_parser("decision")
     d.add_argument("--question", required=True)
     d.add_argument("--options", required=True, help="comma-separated, max 4")
     d.add_argument("--source")
+    d.add_argument("--key", help="stable dedup key — replaces any existing OPEN card with the same key instead of inserting a new one")
 
     b = sub.add_parser("brief")
     b.add_argument("--title", required=True)
     b.add_argument("--lines", required=True)
     b.add_argument("--source")
+    b.add_argument("--key", help="stable dedup key — replaces any existing OPEN card with the same key instead of inserting a new one")
 
     bo = sub.add_parser("bounce")
     bo.add_argument("--id", required=True)

@@ -20,11 +20,21 @@ Netlify (`pulse-zero.netlify.app`), `publish = "public"`. No build step. Auto-de
 
 ```bash
 export PULSE_ZERO_SERVICE_KEY=<supabase secret key, sb_secret_...>   # never commit this
-bin/pulse-push action   --title "Approve X" --why "..." --steps "1. ...\n2. ..." --url "https://..." --source dee
-bin/pulse-push verdict  --artifact "Momentum v0" --url "https://momentum-demo-esr.netlify.app" --summary "..." --source dee
-bin/pulse-push decision --question "Ship A or B?" --options "A,B,Other" --source dee
-bin/pulse-push brief    --title "Estate brief 2026-07-16" --lines "Line1\nLine2\nLine3" --source dee
+bin/pulse-push action   --title "Approve X" --why "..." --steps "1. ...\n2. ..." --url "https://..." --source dee --key "approve-x"
+bin/pulse-push verdict  --artifact "Momentum v0" --url "https://momentum-demo-esr.netlify.app" --summary "..." --source dee --key "momentum-v0-verdict"
+bin/pulse-push decision --question "Ship A or B?" --options "A,B,Other" --source dee --key "ship-a-or-b"
+bin/pulse-push brief    --title "Estate brief 2026-07-16" --lines "Line1\nLine2\nLine3" --source dee --key "estate-brief-2026-07-16"
 ```
+
+**Always pass `--key` for anything a session might push more than once** (a retry, a
+recurring nightly job, a card re-pushed after a code change). `--key` is a stable dedup
+slug: pushing again with the same key **updates the existing OPEN card in place** instead
+of inserting a duplicate — same "replace same key" semantics as `_estate/bin/pulse-enqueue`.
+Even without `--key`, `action` cards get a safety net: pushing an action with the same
+`--title` (case-insensitive) and `--source` as an existing OPEN action card skips the
+insert and warns on stderr instead of silently duplicating. (Bug found 2026-07-26: the
+original `pulse-push` did a bare INSERT on every call with no dedup at all — multiple
+sessions/Tower pushing near-identical cards produced real duplicates on the board.)
 
 Optional Yeshie hand-off fields on `action` cards:
 
@@ -86,6 +96,46 @@ The relay's `POST http://localhost:3333/run` endpoint (body `{payload, params?, 
 - The relay's `/run` payload shape assumes a Yeshie `skill_run` chain (`payload` = a recipe/payload.json content). `--yeshie-task` accepting a bare path string wraps it as `{recipe_path: ...}`, which the relay does **not** currently know how to resolve from a path — only inline recipe JSON is actually runnable today (irrelevant while PNA blocks the transport anyway, but blocks it further even if PNA gets fixed).
 - Feature-flagged behind `?yeshie=1` on purpose — the button is a known-not-yet-useful convenience until one of the above is resolved.
 
+## Feedback (SOMA-APP-STANDARD §8)
+
+Pulse Zero ships the canonical `soma-feedback` widget, vendored at
+`public/vendor/soma-feedback/{soma-feedback.js,soma-feedback.css}`. Per §15's "app with its
+own auth" adoption path, it does **not** route through the shared VPS `feedback-svc`
+(that service has had real outages — an expired TLS cert took down every site's chip at
+once on 2026-07-22). Instead `data-endpoint="/.netlify/functions/feedback"` points at
+Pulse Zero's own Netlify function (`netlify/functions/feedback.js`), which writes into
+Pulse Zero's own `public.pulse_zero_feedback` table (same Supabase project, own table).
+
+**What's complete:** submissions land in `pulse_zero_feedback` (status `new`), honeypot
+handled, CORS handled, `data-no-google` set (this origin isn't registered on the shared
+Google OAuth client).
+
+**What's stubbed, honestly:** no clarity-loop backend (every submission is accepted
+immediately, no `clarify` round-trip) and no admin review UI yet — "all feedback → review
+queue" per the standard's explicit fallback for when a full admin fast-path isn't built
+yet. To see submitted feedback today, query the table directly:
+`PULSE_ZERO_SERVICE_KEY=... curl "$PULSE_ZERO_SUPABASE_URL/rest/v1/pulse_zero_feedback?select=*&order=created_at.desc" -H "apikey: $PULSE_ZERO_SERVICE_KEY" -H "Authorization: Bearer $PULSE_ZERO_SERVICE_KEY"`.
+A small admin view surfacing this list on the board is a reasonable next pass, not done here.
+
 ## Schema
 
-`public.pulse_cards(id, app_id, type, payload jsonb, status, answer jsonb, created_by, created_at, answered_at, bounce_reason text, resolved_note text, yeshie_steps text, yeshie_task jsonb)`. `status` check constraint: `open | answered | retired | bounced | resolved`. RLS: service_role full access; `mw@mike-wolf.com` can select/update its own app_id rows. Migration SQL is not checked in (ad hoc via Supabase Management API) — see git history / session transcript if it needs to be replayed. 2026-07-26 ALTERs (additive, non-destructive): added `bounce_reason`, `resolved_note`, `yeshie_steps`, `yeshie_task` columns; widened the `status` check constraint to include `bounced` and `resolved`.
+`public.pulse_cards(id, app_id, type, payload jsonb, status, answer jsonb, created_by, created_at, answered_at, bounce_reason text, resolved_note text, yeshie_steps text, yeshie_task jsonb, dedupe_key text)`. `status` check constraint: `open | answered | retired | bounced | resolved`. RLS: service_role full access; `mw@mike-wolf.com` can select/update its own app_id rows. Migration SQL is not checked in (ad hoc via Supabase Management API) — see git history / session transcript if it needs to be replayed. 2026-07-26 ALTERs (additive, non-destructive): added `bounce_reason`, `resolved_note`, `yeshie_steps`, `yeshie_task` columns; widened the `status` check constraint to include `bounced` and `resolved`. 2026-07-26 (bugfix pass, later same day): added `dedupe_key text` + a partial index `(app_id, dedupe_key) where status='open' and dedupe_key is not null`; also added a new standalone table `public.pulse_zero_feedback(id, site, page, url, area, text, name, email, conversation jsonb, status, created_at)` for the §8 feedback widget (RLS: service_role full access, `mw@mike-wolf.com` select-only).
+
+## Automated smoke test
+
+`bin/test-board.sh` drives the deployed board end-to-end via Chrome CDP (same technique
+used for manual verification): logs in with a real magic-link session, pushes test cards
+(including a same-title/source pair to exercise dedup, a `decision` card to check the
+Other-dialog contrast, and a pre-`resolved` card to check it's hidden by default), loads
+the board, asserts the five bug fixes below didn't regress, then deletes every test row it
+created. Run it with:
+
+```bash
+export PULSE_ZERO_SERVICE_KEY=<supabase secret key>
+bin/test-board.sh
+```
+
+Run this before any future change to `public/index.html` or `bin/pulse-push` ships. It
+requires Chrome running with remote debugging on port 9222 (`chrome-debug-launcher.sh` —
+see `~/Projects/CLAUDE.md` "Only debug Chrome ever runs") and Python 3 with no extra
+dependencies (uses the CDP HTTP/WebSocket endpoints directly, no Playwright install).
