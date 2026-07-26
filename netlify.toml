@@ -2,6 +2,15 @@
   publish = "public"
   functions = "netlify/functions"
 
+[build.environment]
+  # The Supabase publishable key (sb_publishable_*) is public by design: it ships
+  # in public/index.html for the browser client and is guarded by RLS. Netlify's
+  # secret scanner flags it only because the same value is also set as a site env
+  # var, which failed every git-triggered build (silently — prod was being kept
+  # current by manual CLI deploys instead). Omitting just this key keeps scanning
+  # on for everything else, including the service key, which must never ship here.
+  SECRETS_SCAN_OMIT_KEYS = "NEXT_PUBLIC_SUPABASE_ANON_KEY"
+
 [[headers]]
   for = "/*"
   [headers.values]
