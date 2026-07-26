@@ -1,32 +1,90 @@
 # Pulse Zero
 
-The bare manage-Mike core. Four card types only: **ACTION**, **VERDICT**, **DECISION**, **BRIEF**. No wellness, digests, media, chat, alarms, or reader capture — see `../SOMA/pulse/STRIPPED-2026-07-15.md` for what got cut and why.
+The "needs-Mike action board." Four card types only: **ACTION**, **VERDICT**, **DECISION**, **BRIEF**. No wellness, digests, media, chat, alarms, or reader capture — see `../SOMA/pulse/STRIPPED-2026-07-15.md` for what got cut and why.
 
 Static single-page app (`public/index.html`) + shared SOMA Auth Supabase project (`omfwcodoimjmbrhssvfl`), table `public.pulse_cards`. Magic-link login, allowlisted to `mw@mike-wolf.com`.
 
+## Board standard (v2, 2026-07-26)
+
+Mike monitors many concurrent AI sessions at once. A card exists because **one specific turn needs Mike's action** — privilege only he holds, real blast radius, a taste/consent call, or an external human is involved. Anything else is the poster's own job (see `~/Projects/SOMA/OWNERSHIP-DEFAULT.md`).
+
+Every action card is: **one imperative line (≤60 chars) + a clickable link.** Never an essay. Put detail in `--steps`/`--why`, not the title. `pulse-push` enforces the length and warns (doesn't block) on a missing `--url` or a title that reads like a description/question instead of a command.
+
+**Tower** (`~/Projects/_estate/specs/tower-steward-v0.md`) is the steward persona that gatekeeps the board. Cards that aren't genuinely Mike-gated get bounced with reason *"You know what to do, don't you?"* and land in the collapsed **Bounced (RSI)** section on the board — visible, not deleted, so the bounce rate feeds back into fleet norms (the RSI loop).
+
 ## Deploy
 
-Netlify, `publish = "public"`. No build step.
+Netlify (`pulse-zero.netlify.app`), `publish = "public"`. No build step. Auto-deploys from `main` via the GitHub integration (`eldrgeek/pulse-zero`); `netlify deploy --prod` also works directly from this repo if you need it live before the webhook fires.
 
 ## Pushing cards (any AI session, any surface)
 
 ```bash
-export PULSE_ZERO_SERVICE_KEY=<supabase service_role key>   # never commit this
+export PULSE_ZERO_SERVICE_KEY=<supabase secret key, sb_secret_...>   # never commit this
 bin/pulse-push action   --title "Approve X" --why "..." --steps "1. ...\n2. ..." --url "https://..." --source dee
 bin/pulse-push verdict  --artifact "Momentum v0" --url "https://momentum-demo-esr.netlify.app" --summary "..." --source dee
 bin/pulse-push decision --question "Ship A or B?" --options "A,B,Other" --source dee
 bin/pulse-push brief    --title "Estate brief 2026-07-16" --lines "Line1\nLine2\nLine3" --source dee
 ```
 
+Optional Yeshie hand-off fields on `action` cards:
+
+```bash
+bin/pulse-push action --title "Renew the TLS cert" --url "https://dash.example.com" \
+  --yeshie-steps $'1. Open dash\n2. Click Renew\n3. Confirm' \
+  --yeshie-task 'sites/example.com/tasks/renew-cert.payload.json' \
+  --source dee
+```
+
+- `--yeshie-steps` — newline-separated human steps. Renders as a **[Guide me]** overlay checklist on the card. No wiring dependency, always works.
+- `--yeshie-task` — inline JSON or a path to a Yeshie recipe/payload file. Renders a **[Yeshie: do it — I'll watch]** button, but only when the board is loaded with `?yeshie=1` (see Yeshie wiring status below).
+
+Board contract enforcement: `--title` is required, imperative, and rejected (exit 1) over 60 chars. `--url` is not required but you'll get a warning without one.
+
+### Tower subcommands
+
+```bash
+bin/pulse-push bounce  --id <card-id> --reason "Not Mike-gated — poster's own job"
+bin/pulse-push resolve --id <card-id> --note "Mike's answer delivered out-of-band"
+bin/pulse-push --list-bounced
+```
+
+`bounce` sets `status=bounced` + `bounce_reason`; the card moves to the board's collapsed "Bounced (RSI)" section. `resolve` sets `status=resolved` + `resolved_note` for closing a card administratively (not through the UI answer flow).
+
 List/poll:
 
 ```bash
 bin/pulse-push --list-open
 bin/pulse-push --list-answers            # also mirrors newly-answered cards into SOMA/board/inbox/
+bin/pulse-push --list-bounced
 ```
 
 `PULSE_ZERO_SUPABASE_URL` defaults to the shared SOMA Auth project; override only if migrating.
 
+## Board UI (public/index.html)
+
+Action cards render as one line (title) + a button row:
+
+- **Open** — deep link, `target=_blank`.
+- **Preview** — toggles an inline sandboxed `<iframe>` of the card's `--url`. Best-effort detection of embed refusal (X-Frame-Options / `frame-ancestors`): if the frame doesn't fire `load` within ~2.5s, or fires implausibly fast (aborted-to-`about:blank`), shows *"Site refuses embedding — Open instead."* This is a heuristic, not a guarantee — some slow-loading real pages will false-positive; the Open link is always offered as the fallback.
+- **Guide me** — only if the card has `yeshie_steps`; shows them as an overlay checklist.
+- **Yeshie: do it — I'll watch** — only if the card has `yeshie_task` AND the board URL has `?yeshie=1`. See wiring status below.
+- **Done** — marks answered (existing flow).
+- **Not mine** — Mike bounces his own card (`status=bounced`, `bounce_reason="Not mine (Mike)"`); shows up in Tower's Bounced (RSI) section.
+
+VERDICT/DECISION/BRIEF cards are unchanged. SOMA Auth magic-link allowlist is unchanged.
+
+## Yeshie wiring status (2026-07-26)
+
+The relay's `POST http://localhost:3333/run` endpoint (body `{payload, params?, tabId?, timeoutMs?}`) is real and has open CORS (`Access-Control-Allow-Origin: *`, no auth check in the current handler — see `~/Projects/yeshie/packages/relay/index.js` around line 1657). The board's "Yeshie: do it" button calls it directly.
+
+**What's wired:** the real fetch call, with a graceful fallback — on any failure (relay down, wrong network, or a browser blocking the mixed-content/private-network fetch from an HTTPS page to `http://localhost`) it copies the task JSON to the clipboard and shows manual run instructions instead of failing silently.
+
+**What's unproven / TODO:**
+- This only works when the browser viewing pulse-zero.netlify.app is running **on the same machine as the relay** (Mike's Mac). From his phone, or from any other device, the fetch will fail and fall through to the clipboard path every time — that's expected, not a bug, but worth knowing.
+- Modern Chrome's Private Network Access checks (fetch from a public HTTPS origin to a `localhost`/private-address target) haven't been verified against this exact relay response — if PNA blocks the request even on the same machine, the button always falls back to clipboard. Needs a real from-the-board click-test on Mike's Mac to confirm the direct-trigger path actually fires (not just the fallback).
+- The relay's `/run` payload shape assumes a Yeshie `skill_run` chain (`payload` = a recipe/payload.json content). `--yeshie-task` accepting a bare path string wraps it as `{recipe_path: ...}`, which the relay does **not** currently know how to resolve from a path — only inline recipe JSON is actually runnable today. Resolving a `recipe_path` server-side (relay reads the file from `yeshie/sites/**`) is the next step to make the path-reference form work, not just inline JSON.
+- Feature-flagged behind `?yeshie=1` on purpose until the above is confirmed live.
+
 ## Schema
 
-`public.pulse_cards(id, app_id, type, payload jsonb, status, answer jsonb, created_by, created_at, answered_at)`. RLS: service_role full access; `mw@mike-wolf.com` can select/update its own app_id rows. Migration SQL is not checked in (ad hoc via Supabase Management API) — see git history / session transcript if it needs to be replayed.
+`public.pulse_cards(id, app_id, type, payload jsonb, status, answer jsonb, created_by, created_at, answered_at, bounce_reason text, resolved_note text, yeshie_steps text, yeshie_task jsonb)`. `status` check constraint: `open | answered | retired | bounced | resolved`. RLS: service_role full access; `mw@mike-wolf.com` can select/update its own app_id rows. Migration SQL is not checked in (ad hoc via Supabase Management API) — see git history / session transcript if it needs to be replayed. 2026-07-26 ALTERs (additive, non-destructive): added `bounce_reason`, `resolved_note`, `yeshie_steps`, `yeshie_task` columns; widened the `status` check constraint to include `bounced` and `resolved`.

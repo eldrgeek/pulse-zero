@@ -1,2 +1,5 @@
 .env
 .netlify/
+__pycache__/
+*.pyc
+supabase/.temp/

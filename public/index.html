@@ -63,6 +63,35 @@
   .answered { opacity: 0.45; }
   .answered .actions { display: none; }
   .answer-tag { font-size: 12.5px; margin-top: 8px; padding: 6px 10px; background: #12302e; color: #4ecdc4; border-radius: 8px; display: inline-block; }
+
+  /* ── Action-card one-liner + preview/guide overlays ───────── */
+  .action-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+  .action-line .title { margin: 0; }
+  .preview-wrap { margin: 6px 0 10px; border-radius: 10px; overflow: hidden; border: 1px solid #26292d; background: #000; }
+  @media (prefers-color-scheme: light) { .preview-wrap { border-color: #e3e5e8; } }
+  .preview-wrap iframe { width: 100%; height: 360px; border: none; display: block; background: #fff; }
+  .preview-note { font-size: 12.5px; padding: 8px 10px; opacity: 0.8; background: #3a2e12; color: #e8b545; }
+  .preview-note a { color: inherit; text-decoration: underline; }
+  .bounced-section { margin-top: 20px; }
+  .bounced-section summary { cursor: pointer; font-size: 13px; opacity: 0.6; padding: 6px 0; }
+  .bounced-card { padding: 10px 12px; border-radius: 10px; background: #16181b; border: 1px solid #26292d; margin-top: 8px; opacity: 0.7; }
+  @media (prefers-color-scheme: light) { .bounced-card { background: #fff; border-color: #e3e5e8; } }
+  .bounced-card .title { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
+  .bounced-card .reason { font-size: 12.5px; opacity: 0.7; }
+  .overlay-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 50;
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  .overlay-box {
+    background: #16181b; border: 1px solid #26292d; border-radius: 14px; padding: 20px;
+    max-width: 420px; width: 100%; max-height: 80vh; overflow-y: auto;
+  }
+  @media (prefers-color-scheme: light) { .overlay-box { background: #fff; border-color: #e3e5e8; } }
+  .overlay-box h2 { font-size: 16px; margin: 0 0 12px; }
+  .overlay-box ol { padding-left: 20px; margin: 0 0 16px; font-size: 14.5px; line-height: 1.6; }
+  .overlay-box li { margin-bottom: 6px; }
+  .overlay-close { width: 100%; background: #26292d; color: #e8eaed; padding: 10px; border-radius: 10px; }
+  @media (prefers-color-scheme: light) { .overlay-close { background: #eceef1; color: #14171a; } }
   .login { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
   .login-box { max-width: 360px; width: 100%; text-align: center; }
   .login-box input { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #35383d; background: #16181b; color: inherit; font-size: 15px; margin: 16px 0 10px; }
@@ -167,20 +196,123 @@ async function renderLogin() {
 
 function cardKindLabel(t) { return t.toUpperCase(); }
 
+const YESHIE_FLAG = new URLSearchParams(location.search).get('yeshie') === '1';
+
+function showOverlay(html) {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'overlay-backdrop';
+  backdrop.innerHTML = `<div class="overlay-box">${html}<button class="overlay-close">Close</button></div>`;
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
+  backdrop.querySelector('.overlay-close').onclick = () => backdrop.remove();
+  document.body.appendChild(backdrop);
+  return backdrop;
+}
+
+function guideMeSteps(steps) {
+  const lines = (steps || '').split('\n').map(s => s.trim()).filter(Boolean);
+  const items = lines.map(l => `<li>${esc(l)}</li>`).join('');
+  showOverlay(`<h2>Guide me</h2><ol>${items || '<li>(no steps given)</li>'}</ol>`);
+}
+
+// Attempt to trigger a Yeshie recipe via the local relay (localhost:3333/run,
+// CORS open, no auth on this endpoint as of 2026-07-26 — see yeshie/CLAUDE.md).
+// Only reachable when the browser viewing this board is on the same machine
+// as the relay. If the fetch fails (different device, relay down, mixed-content
+// block on remote HTTPS pages calling http://localhost), fall back to copying
+// the task payload to the clipboard with manual instructions.
+async function runYeshieTask(task, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  try {
+    const resp = await fetch('http://localhost:3333/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payload: task, timeoutMs: 60000 }),
+    });
+    if (!resp.ok) throw new Error(`relay ${resp.status}`);
+    const result = await resp.json();
+    btn.textContent = orig;
+    btn.disabled = false;
+    showOverlay(`<h2>Yeshie ran it</h2><p style="font-size:13.5px;white-space:pre-wrap;">${esc(JSON.stringify(result, null, 2))}</p>`);
+  } catch (err) {
+    btn.textContent = orig;
+    btn.disabled = false;
+    try { await navigator.clipboard.writeText(JSON.stringify(task, null, 2)); } catch (_) {}
+    showOverlay(`
+      <h2>Couldn't reach the relay</h2>
+      <p style="font-size:13.5px;">${esc(String(err.message || err))}</p>
+      <p style="font-size:13.5px;">Task payload copied to clipboard. On the Mac running the relay:</p>
+      <ol style="font-size:13.5px;">
+        <li>Confirm relay is up: <code>curl localhost:3333/status</code></li>
+        <li>Run it: <code>node scripts/run-async.mjs &lt;recipe&gt;</code> in <code>~/Projects/yeshie</code>, or paste the clipboard payload into a <code>yeshie_run</code> call.</li>
+      </ol>`);
+  }
+}
+
+function togglePreview(div, url) {
+  let wrap = div.querySelector('.preview-wrap');
+  if (wrap) { wrap.remove(); return; }
+  wrap = document.createElement('div');
+  wrap.className = 'preview-wrap';
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
+  wrap.appendChild(iframe);
+  const anchor = div.querySelector('.action-line') || div.querySelector('.title');
+  anchor.insertAdjacentElement('afterend', wrap);
+
+  const setAt = Date.now();
+  let gotLoad = false;
+  iframe.addEventListener('load', () => {
+    gotLoad = true;
+    const delta = Date.now() - setAt;
+    // Heuristic: a load that fires implausibly fast for a real page usually
+    // means the navigation was aborted (X-Frame-Options / frame-ancestors)
+    // and the frame settled on about:blank instead.
+    if (delta < 150) flagBlocked(wrap, url);
+  });
+  iframe.src = url;
+  setTimeout(() => { if (!gotLoad) flagBlocked(wrap, url); }, 2500);
+}
+
+function flagBlocked(wrap, url) {
+  if (wrap.querySelector('.preview-note')) return;
+  const note = document.createElement('div');
+  note.className = 'preview-note';
+  note.innerHTML = `Site refuses embedding (or is slow) — <a href="${esc(url)}" target="_blank" rel="noopener">Open instead</a>.`;
+  wrap.appendChild(note);
+}
+
+async function bounceByMike(c) {
+  const { error } = await sb.from('pulse_cards').update({
+    status: 'bounced',
+    bounce_reason: 'Not mine (Mike)',
+    answered_at: new Date().toISOString(),
+  }).eq('id', c.id);
+  if (error) { alert('Failed: ' + error.message); return; }
+  loadCards();
+}
+
 function renderCard(c) {
   const p = c.payload || {};
   const answered = c.status !== 'open';
   let body = '';
   if (c.type === 'action') {
+    const guideBtn = c.yeshie_steps ? `<button class="btn-secondary" data-action="guide">Guide me</button>` : '';
+    const yeshieBtn = (c.yeshie_task && YESHIE_FLAG) ? `<button class="btn-secondary" data-action="yeshie-run">Yeshie: do it — I'll watch</button>` : '';
     body = `
-      <p class="title">${esc(p.title)}</p>
-      <p class="why">${esc(p.why)}</p>
+      <div class="action-line">
+        <p class="title">${esc(p.title)}</p>
+      </div>
+      ${p.why ? `<p class="why">${esc(p.why)}</p>` : ''}
       ${p.steps ? `<div class="steps">${esc(p.steps)}</div>` : ''}
-      ${p.url ? `<p><a class="link" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a></p>` : ''}
       <div class="actions">
+        ${p.url ? `<button class="btn-primary" data-action="open">Open</button>` : ''}
+        ${p.url ? `<button class="btn-secondary" data-action="preview">Preview</button>` : ''}
+        ${guideBtn}
+        ${yeshieBtn}
         <button class="btn-primary" data-action="done">Done</button>
-        <button class="btn-secondary" data-action="skip">Skip</button>
-        <button class="btn-secondary" data-action="later">Later</button>
+        <button class="btn-secondary" data-action="not-mine">Not mine</button>
       </div>`;
   } else if (c.type === 'verdict') {
     body = `
@@ -211,12 +343,18 @@ function renderCard(c) {
   const div = document.createElement('div');
   div.className = 'card' + (answered ? ' answered' : '');
   div.innerHTML = `<span class="kind kind-${c.type}">${cardKindLabel(c.type)}</span>${body}` +
-    (answered ? `<div class="answer-tag">${esc(c.status)}${c.answer ? ': ' + esc(JSON.stringify(c.answer.value ?? c.answer)) : ''}</div>` : '');
+    (answered ? `<div class="answer-tag">${esc(c.status)}${c.answer ? ': ' + esc(JSON.stringify(c.answer.value ?? c.answer)) : ''}${c.resolved_note ? ': ' + esc(c.resolved_note) : ''}</div>` : '');
 
   if (!answered) {
     div.querySelectorAll('button[data-action]').forEach(btn => {
       btn.onclick = async () => {
         const action = btn.dataset.action;
+        // Local, non-persisting actions specific to the action-card layout.
+        if (action === 'open') { window.open(p.url, '_blank', 'noopener'); return; }
+        if (action === 'preview') { togglePreview(div, p.url); return; }
+        if (action === 'guide') { guideMeSteps(c.yeshie_steps); return; }
+        if (action === 'yeshie-run') { await runYeshieTask(c.yeshie_task, btn); return; }
+        if (action === 'not-mine') { await bounceByMike(c); return; }
         if (action === 'other' || action === 'change') {
           const input = div.querySelector('.textresp');
           input.style.display = 'block';
@@ -233,6 +371,15 @@ function renderCard(c) {
       };
     });
   }
+  return div;
+}
+
+function renderBouncedCard(c) {
+  const p = c.payload || {};
+  const title = p.title || p.artifact_name || p.question || 'Untitled card';
+  const div = document.createElement('div');
+  div.className = 'bounced-card';
+  div.innerHTML = `<p class="title">${esc(title)}</p><p class="reason">${esc(c.bounce_reason || '(no reason given)')} — <span class="muted">from ${esc(c.created_by)}</span></p>`;
   return div;
 }
 
@@ -258,13 +405,21 @@ async function loadCards() {
   main.innerHTML = '';
   if (error) { main.innerHTML = `<div class="empty">Load error: ${esc(error.message)}</div>`; return; }
   const open = (data || []).filter(c => c.status === 'open');
-  const done = (data || []).filter(c => c.status !== 'open').slice(0, 15);
+  const bounced = (data || []).filter(c => c.status === 'bounced').slice(0, 30);
+  const done = (data || []).filter(c => c.status !== 'open' && c.status !== 'bounced').slice(0, 15);
   document.getElementById('count').textContent = open.length + ' open';
   if (!data || data.length === 0) {
     main.innerHTML = '<div class="empty">Nothing to manage right now.</div>';
     return;
   }
   [...open, ...done].forEach(c => main.appendChild(renderCard(c)));
+  if (bounced.length) {
+    const details = document.createElement('details');
+    details.className = 'bounced-section';
+    details.innerHTML = `<summary>Bounced (RSI) — ${bounced.length}</summary>`;
+    bounced.forEach(c => details.appendChild(renderBouncedCard(c)));
+    main.appendChild(details);
+  }
 }
 
 async function renderApp(session) {

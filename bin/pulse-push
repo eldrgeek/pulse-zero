@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
-"""pulse-push — push/list cards on the Pulse Zero board (manage-Mike surface).
+"""pulse-push — push/list/bounce/resolve cards on the Pulse Zero board (manage-Mike surface).
 
 Usage:
-  pulse-push action   --title T --why W [--steps S] [--url U] [--source S]
+  pulse-push action   --title T [--why W] [--steps S] [--url U] [--source S]
+                       [--yeshie-steps STEPS] [--yeshie-task JSON_OR_PATH]
   pulse-push verdict  --artifact A --url U --summary S
   pulse-push decision --question Q --options "A,B,C"
   pulse-push brief    --title T --lines L
+  pulse-push bounce   --id ID --reason "..."
+  pulse-push resolve  --id ID --note "..."
   pulse-push --list-open
   pulse-push --list-answers [--since ISO8601]
+  pulse-push --list-bounced
+
+Card contract (action cards): one imperative line, <=60 chars, a clickable
+--url is strongly encouraged. See ~/Projects/_estate/specs/tower-steward-v0.md
+and pulse-zero/README.md for the board standard.
 
 Env:
   PULSE_ZERO_SUPABASE_URL   (default: https://omfwcodoimjmbrhssvfl.supabase.co)
@@ -16,12 +24,20 @@ Env:
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.request
 
 DEFAULT_URL = "https://omfwcodoimjmbrhssvfl.supabase.co"
 APP_ID = "pulse-zero"
 BOARD_INBOX = os.path.expanduser("~/Projects/SOMA/board/inbox")
+TITLE_MAX = 60
+
+# Weak signal words that suggest a title is descriptive, not imperative
+# ("Approve the deploy" is imperative; "Deploy approval needed" is not).
+NON_IMPERATIVE_STARTS = (
+    "the ", "a ", "an ", "this ", "there ", "it ", "i ", "we ",
+)
 
 
 def sb_request(method, path, key, url, body=None, params=None):
@@ -33,7 +49,7 @@ def sb_request(method, path, key, url, body=None, params=None):
     req.add_header("apikey", key)
     req.add_header("Authorization", f"Bearer {key}")
     req.add_header("Content-Type", "application/json")
-    if method == "POST":
+    if method in ("POST", "PATCH"):
         req.add_header("Prefer", "return=representation")
     try:
         with urllib.request.urlopen(req) as resp:
@@ -43,11 +59,43 @@ def sb_request(method, path, key, url, body=None, params=None):
         sys.exit(1)
 
 
+def validate_action_title(title):
+    """Enforce the card contract on action titles. Exits on hard failure,
+    warns (stderr) on soft issues. Returns nothing."""
+    if not title or not title.strip():
+        sys.stderr.write("error: --title is required and cannot be blank\n")
+        sys.exit(1)
+    if len(title) > TITLE_MAX:
+        sys.stderr.write(
+            f"error: --title is {len(title)} chars, max is {TITLE_MAX}.\n"
+            f"  Board standard: one imperative line, not an essay.\n"
+            f"  Got: {title!r}\n"
+            f"  Trim it — put detail in --steps or --why instead.\n"
+        )
+        sys.exit(1)
+    stripped = title.strip().lower()
+    if stripped.endswith("?"):
+        sys.stderr.write(
+            f"warn: --title reads as a question, not an imperative: {title!r}\n"
+            f"  Example of a passing title: 'Approve the Netlify deploy'\n"
+        )
+    elif any(stripped.startswith(w) for w in NON_IMPERATIVE_STARTS):
+        sys.stderr.write(
+            f"warn: --title may not be imperative (starts with '{stripped.split()[0]}'): {title!r}\n"
+            f"  Example of a passing title: 'Approve the Netlify deploy'\n"
+        )
+
+
 def push(args, key, url):
     payload = {}
     ctype = args.type
     if ctype == "action":
-        payload = {"title": args.title, "why": args.why, "steps": args.steps, "url": args.url}
+        validate_action_title(args.title)
+        if not args.url:
+            sys.stderr.write(
+                "warn: --url not set. Action cards without a deep link make Mike guess where to go.\n"
+            )
+        payload = {"title": args.title, "why": args.why or "", "steps": args.steps, "url": args.url}
     elif ctype == "verdict":
         payload = {"artifact_name": args.artifact, "url": args.url, "summary": args.summary}
     elif ctype == "decision":
@@ -62,10 +110,34 @@ def push(args, key, url):
         "created_by": args.source or "unknown",
         "status": "open",
     }
+    if ctype == "action":
+        if getattr(args, "yeshie_steps", None):
+            row["yeshie_steps"] = args.yeshie_steps
+        yt = getattr(args, "yeshie_task", None)
+        if yt:
+            row["yeshie_task"] = load_yeshie_task(yt)
     result = sb_request("POST", "pulse_cards", key, url, body=row)
     card = result[0] if isinstance(result, list) else result
     print(f"pushed {ctype} card {card.get('id')}")
     return card
+
+
+def load_yeshie_task(value):
+    """--yeshie-task accepts either inline JSON or a path to a recipe/payload
+    JSON file (e.g. yeshie/sites/<domain>/tasks/*.payload.json)."""
+    candidate = os.path.expanduser(value)
+    if os.path.isfile(candidate):
+        with open(candidate) as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                # not JSON — treat as a bare recipe reference
+                return {"recipe_path": candidate}
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        # bare string reference, e.g. "sites/github.com/tasks/foo.payload.json"
+        return {"recipe_path": value}
 
 
 def list_cards(status_filter, key, url, since=None):
@@ -99,16 +171,52 @@ def sync_answers_to_board(rows):
             }, f, indent=2)
 
 
+def bounce(args, key, url):
+    if not args.reason or not args.reason.strip():
+        sys.stderr.write("error: --reason is required for bounce\n")
+        sys.exit(1)
+    body = {"status": "bounced", "bounce_reason": args.reason, "answered_at": _now_iso()}
+    result = sb_request("PATCH", "pulse_cards", key, url, body=body, params={"id": f"eq.{args.id}"})
+    if not result:
+        sys.stderr.write(f"error: no card matched id {args.id}\n")
+        sys.exit(1)
+    print(f"bounced card {args.id}: {args.reason}")
+    print('You know what to do, don\'t you?')
+    return result
+
+
+def resolve(args, key, url):
+    if not args.note or not args.note.strip():
+        sys.stderr.write("error: --note is required for resolve\n")
+        sys.exit(1)
+    body = {"status": "resolved", "resolved_note": args.note, "answered_at": _now_iso()}
+    result = sb_request("PATCH", "pulse_cards", key, url, body=body, params={"id": f"eq.{args.id}"})
+    if not result:
+        sys.stderr.write(f"error: no card matched id {args.id}\n")
+        sys.exit(1)
+    print(f"resolved card {args.id}: {args.note}")
+    return result
+
+
+def _now_iso():
+    import datetime
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
 def main():
-    p = argparse.ArgumentParser(description="Push/list cards on Pulse Zero")
+    p = argparse.ArgumentParser(description="Push/list/bounce/resolve cards on Pulse Zero")
     sub = p.add_subparsers(dest="type")
 
     a = sub.add_parser("action")
     a.add_argument("--title", required=True)
-    a.add_argument("--why", required=True)
+    a.add_argument("--why")
     a.add_argument("--steps")
     a.add_argument("--url")
     a.add_argument("--source")
+    a.add_argument("--yeshie-steps", dest="yeshie_steps",
+                    help="newline-separated human steps rendered as an overlay checklist ('Guide me')")
+    a.add_argument("--yeshie-task", dest="yeshie_task",
+                    help="inline JSON or path to a Yeshie recipe/payload.json ('do it while I watch')")
 
     v = sub.add_parser("verdict")
     v.add_argument("--artifact", required=True)
@@ -126,8 +234,17 @@ def main():
     b.add_argument("--lines", required=True)
     b.add_argument("--source")
 
+    bo = sub.add_parser("bounce")
+    bo.add_argument("--id", required=True)
+    bo.add_argument("--reason", required=True)
+
+    rs = sub.add_parser("resolve")
+    rs.add_argument("--id", required=True)
+    rs.add_argument("--note", required=True)
+
     p.add_argument("--list-open", action="store_true")
     p.add_argument("--list-answers", action="store_true")
+    p.add_argument("--list-bounced", action="store_true")
     p.add_argument("--since")
 
     args = p.parse_args()
@@ -140,10 +257,16 @@ def main():
 
     if args.list_open:
         list_cards("open", key, url)
+    elif args.list_bounced:
+        list_cards("bounced", key, url)
     elif args.list_answers:
         rows = list_cards(None, key, url, since=args.since)
         answered = [r for r in rows if r.get("status") != "open"]
         sync_answers_to_board(answered)
+    elif args.type == "bounce":
+        bounce(args, key, url)
+    elif args.type == "resolve":
+        resolve(args, key, url)
     elif args.type:
         push(args, key, url)
     else:
