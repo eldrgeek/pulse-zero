@@ -220,16 +220,29 @@ function guideMeSteps(steps) {
 // as the relay. If the fetch fails (different device, relay down, mixed-content
 // block on remote HTTPS pages calling http://localhost), fall back to copying
 // the task payload to the clipboard with manual instructions.
+// Confirmed live 2026-07-26 (Dee, CDP verification against the deployed
+// HTTPS origin): a fetch from this page to http://localhost:3333 does not
+// error and does not resolve — Chrome's Private Network Access check
+// silently stalls it rather than rejecting. A plain try/catch around fetch
+// never fires, so this needs a hard client-side race against a timeout or
+// the button hangs on "Running…" forever. See README "Yeshie wiring status."
+function timeoutAfter(ms, msg) {
+  return new Promise((_, reject) => setTimeout(() => reject(new Error(msg)), ms));
+}
+
 async function runYeshieTask(task, btn) {
   const orig = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Running…';
   try {
-    const resp = await fetch('http://localhost:3333/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ payload: task, timeoutMs: 60000 }),
-    });
+    const resp = await Promise.race([
+      fetch('http://localhost:3333/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payload: task, timeoutMs: 60000 }),
+      }),
+      timeoutAfter(4000, 'relay unreachable from this page (timed out after 4s)'),
+    ]);
     if (!resp.ok) throw new Error(`relay ${resp.status}`);
     const result = await resp.json();
     btn.textContent = orig;

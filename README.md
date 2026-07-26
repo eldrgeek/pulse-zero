@@ -35,7 +35,7 @@ bin/pulse-push action --title "Renew the TLS cert" --url "https://dash.example.c
   --source dee
 ```
 
-- `--yeshie-steps` — newline-separated human steps. Renders as a **[Guide me]** overlay checklist on the card. No wiring dependency, always works.
+- `--yeshie-steps` — newline-separated human steps. Renders as a **[Guide me]** overlay checklist on the card. No wiring dependency, always works. Pass plain phrases, not pre-numbered lines — the overlay renders an `<ol>` and numbers them itself (`1. 1. Click...` is a double-number if your steps text already starts with `1.`).
 - `--yeshie-task` — inline JSON or a path to a Yeshie recipe/payload file. Renders a **[Yeshie: do it — I'll watch]** button, but only when the board is loaded with `?yeshie=1` (see Yeshie wiring status below).
 
 Board contract enforcement: `--title` is required, imperative, and rejected (exit 1) over 60 chars. `--url` is not required but you'll get a warning without one.
@@ -73,17 +73,18 @@ Action cards render as one line (title) + a button row:
 
 VERDICT/DECISION/BRIEF cards are unchanged. SOMA Auth magic-link allowlist is unchanged.
 
-## Yeshie wiring status (2026-07-26)
+## Yeshie wiring status (2026-07-26, confirmed live)
 
 The relay's `POST http://localhost:3333/run` endpoint (body `{payload, params?, tabId?, timeoutMs?}`) is real and has open CORS (`Access-Control-Allow-Origin: *`, no auth check in the current handler — see `~/Projects/yeshie/packages/relay/index.js` around line 1657). The board's "Yeshie: do it" button calls it directly.
 
-**What's wired:** the real fetch call, with a graceful fallback — on any failure (relay down, wrong network, or a browser blocking the mixed-content/private-network fetch from an HTTPS page to `http://localhost`) it copies the task JSON to the clipboard and shows manual run instructions instead of failing silently.
+**Tested live via CDP against the deployed HTTPS origin, same Mac as the relay** (Dee, 2026-07-26): the direct fetch **does not work, even on Mike's own Mac** — it neither resolves nor rejects, it just hangs. This is Chrome's Private Network Access check silently stalling a fetch from a public HTTPS page to a `localhost` target; a bare try/catch never fires because there's no error, just no response. First implementation missed this and left the button stuck on "Running…" forever — fixed by racing the fetch against a 4s client-side timeout (`timeoutAfter()` in `public/index.html`), confirmed by a second CDP pass: click → 4s → fallback overlay renders with the clipboard-copy instructions, button re-enables.
 
-**What's unproven / TODO:**
-- This only works when the browser viewing pulse-zero.netlify.app is running **on the same machine as the relay** (Mike's Mac). From his phone, or from any other device, the fetch will fail and fall through to the clipboard path every time — that's expected, not a bug, but worth knowing.
-- Modern Chrome's Private Network Access checks (fetch from a public HTTPS origin to a `localhost`/private-address target) haven't been verified against this exact relay response — if PNA blocks the request even on the same machine, the button always falls back to clipboard. Needs a real from-the-board click-test on Mike's Mac to confirm the direct-trigger path actually fires (not just the fallback).
-- The relay's `/run` payload shape assumes a Yeshie `skill_run` chain (`payload` = a recipe/payload.json content). `--yeshie-task` accepting a bare path string wraps it as `{recipe_path: ...}`, which the relay does **not** currently know how to resolve from a path — only inline recipe JSON is actually runnable today. Resolving a `recipe_path` server-side (relay reads the file from `yeshie/sites/**`) is the next step to make the path-reference form work, not just inline JSON.
-- Feature-flagged behind `?yeshie=1` on purpose until the above is confirmed live.
+**What's wired and verified:** the attempt-then-fallback behavior. Every click either runs the task (if PNA ever allows it — untested combination, e.g. Chrome flag or a future browser policy) or falls back to clipboard-copy with manual run instructions inside 4 seconds, never hangs.
+
+**What's still open / TODO:**
+- The direct-trigger path is **not currently reachable from any browser context tested** — treat the button as "clipboard hand-off with a wired but presently-inert fast path," not a real one-click trigger. If PNA policy changes (or the relay adds a proper PNA preflight response, `Access-Control-Allow-Private-Network: true`) the fast path could start working without a code change; worth re-testing after any relay update.
+- The relay's `/run` payload shape assumes a Yeshie `skill_run` chain (`payload` = a recipe/payload.json content). `--yeshie-task` accepting a bare path string wraps it as `{recipe_path: ...}`, which the relay does **not** currently know how to resolve from a path — only inline recipe JSON is actually runnable today (irrelevant while PNA blocks the transport anyway, but blocks it further even if PNA gets fixed).
+- Feature-flagged behind `?yeshie=1` on purpose — the button is a known-not-yet-useful convenience until one of the above is resolved.
 
 ## Schema
 
