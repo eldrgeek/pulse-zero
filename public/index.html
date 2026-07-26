@@ -47,7 +47,13 @@
   .title { font-size: 16.5px; font-weight: 620; margin: 0 0 4px; line-height: 1.3; }
   .why, .body-text { font-size: 14px; opacity: 0.75; margin: 0 0 10px; line-height: 1.45; white-space: pre-wrap; }
   a.link { color: #6ea8fe; word-break: break-all; }
-  .steps { font-size: 13.5px; opacity: 0.85; margin: 8px 0; padding-left: 18px; }
+  .steps-accordion { margin: 8px 0 10px; }
+  .steps-toggle { background: none; border: none; padding: 0; font-size: 13px; font-weight: 600; opacity: 0.7; cursor: pointer; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+  .steps-list { list-style: none; margin: 8px 0 0; padding: 0; }
+  .step-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; font-size: 13.5px; line-height: 1.4; }
+  .step-item label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; width: 100%; }
+  .step-item input[type="checkbox"] { flex-shrink: 0; width: 18px; height: 18px; margin: 1px 0 0; accent-color: #2f6fed; }
+  .step-item.checked span { text-decoration: line-through; opacity: 0.55; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
   button {
     font: inherit; font-size: 14px; font-weight: 600; padding: 10px 16px; border-radius: 10px;
@@ -231,6 +237,46 @@ function showOverlay(html) {
   backdrop.querySelector('.overlay-close').onclick = () => backdrop.remove();
   document.body.appendChild(backdrop);
   return backdrop;
+}
+
+// ── Step checklist ──────────────────────────────────────────────────
+// payload.steps is a single '\n'-joined string written by pulse-push's
+// --steps flag (see bin/pulse-push). Split into individual checkable
+// items instead of dumping it as one run-on blob. Strips a leading
+// "1. " / "2) " numbering if the source already numbered lines, since
+// the list markup (checkbox) supplies its own visual order.
+function parseSteps(raw) {
+  return (raw || '')
+    .split('\n')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(s => s.replace(/^\d+[.)]\s*/, ''));
+}
+
+function stepsAccordion(rawSteps) {
+  const items = parseSteps(rawSteps);
+  if (!items.length) return '';
+  const list = items.map((s, i) => `
+    <li class="step-item" data-step-idx="${i}">
+      <label><input type="checkbox" class="step-check" /><span>${esc(s)}</span></label>
+    </li>`).join('');
+  return `
+    <div class="steps-accordion">
+      <button class="steps-toggle" data-action="toggle-steps">Steps (${items.length})</button>
+      <div class="steps-body" style="display:none;">
+        <ul class="steps-list">${list}</ul>
+      </div>
+    </div>`;
+}
+
+function wireSteps(div) {
+  const toggle = div.querySelector('[data-action="toggle-steps"]');
+  const body = div.querySelector('.steps-body');
+  if (!toggle || !body) return;
+  toggle.onclick = () => { body.style.display = body.style.display === 'none' ? 'block' : 'none'; };
+  div.querySelectorAll('.step-item input.step-check').forEach(cb => {
+    cb.onchange = () => cb.closest('.step-item').classList.toggle('checked', cb.checked);
+  });
 }
 
 function guideMeSteps(steps) {
@@ -456,7 +502,7 @@ function renderCard(c) {
         <p class="title">${esc(p.title)}</p>
       </div>
       ${p.why ? `<p class="why">${esc(p.why)}</p>` : ''}
-      ${p.steps ? `<div class="steps">${esc(p.steps)}</div>` : ''}
+      ${stepsAccordion(p.steps)}
       <div class="actions">
         ${p.url ? `<button class="btn-primary" data-action="open">Open</button>` : ''}
         ${p.url ? `<button class="btn-secondary" data-action="preview">Preview</button>` : ''}
@@ -530,6 +576,7 @@ function renderCard(c) {
       };
     });
   }
+  wireSteps(div);
   wireComments(div, c);
   return div;
 }
