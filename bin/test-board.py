@@ -303,8 +303,9 @@ def main():
             const bar = document.getElementById('talk-bar');
             const ask = [...document.querySelectorAll('button')]
                 .find(b => b.textContent.trim() === 'Ask Pulse');
+            const askCard = ask && ask.closest('.card');
             if (ask) ask.click();
-            const input = document.querySelector('.comment-input');
+            const input = askCard && askCard.querySelector('.comment-input');
             const { data: { session } } = await sb.auth.getSession();
             const signed = await fetch('/.netlify/functions/pulse-agent-session', {
                 headers: { Authorization: `Bearer ${session.access_token}` },
