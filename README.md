@@ -113,9 +113,28 @@ Action cards render as one line (title) + a button row:
 - **Not mine** — Mike bounces his own card (`status=bounced`, `bounce_reason="Not mine (Mike)"`); shows up in Tower's Bounced (RSI) section.
 - **Snooze** — every card type (action/verdict/decision/brief) has this. Opens a preset picker (Tonight / Tomorrow morning / Next week, computed client-side in Mike's local time); the card leaves the default view until then. See "Snooze" under Pushing cards above for the CLI-side dedup interaction.
 
-Every card (including answered/bounced/done ones) has a **Comments** disclosure at the bottom — see "Comments" above. Commenting never changes status.
+Every card (including answered/bounced/done ones) has a task-scoped **Pulse
+thread** at the bottom — see "Comments" above. Open action cards also show an
+**Ask Pulse** button that expands and focuses the same thread. The input warns
+not to paste credentials; replies retain their actual worker attribution.
+Commenting never changes status.
 
 VERDICT/DECISION/BRIEF cards are otherwise unchanged. SOMA Auth magic-link allowlist is unchanged.
+
+### Pulse voice authentication
+
+The voice bar is hidden until the existing Supabase magic-link session is
+confirmed. It no longer connects to ElevenLabs with a public agent ID. The
+browser sends its Supabase access token to
+`/.netlify/functions/pulse-agent-session`; that function verifies the token
+with Supabase, requires `mw@mike-wolf.com`, and uses the server-only
+`ELEVENLABS_API_KEY` to return a short-lived ElevenLabs signed WebSocket URL.
+The ElevenLabs agent must have `platform_settings.auth.enable_auth=true`.
+Sign-out immediately ends any live conversation.
+
+The Netlify production environment therefore requires
+`ELEVENLABS_API_KEY`. Never expose this value in `public/` or return it from a
+function.
 
 ## Yeshie wiring status (2026-07-26, confirmed live)
 
@@ -162,9 +181,10 @@ A small admin view surfacing this list on the board is a reasonable next pass, n
 `bin/test-board.sh` drives the deployed board end-to-end via Chrome CDP (same technique
 used for manual verification): logs in with a real magic-link session, pushes test cards
 (including a same-title/source pair to exercise dedup, a `decision` card to check the
-Other-dialog contrast, and a pre-`resolved` card to check it's hidden by default), loads
-the board, asserts the five bug fixes below didn't regress, then deletes every test row it
-created. Run it with:
+Other-dialog contrast, a pre-`resolved` card, and 101 terminal-history rows), loads
+the board, checks active-card visibility, task-scoped Ask Pulse, the authenticated
+signed-session broker, contrast, history disclosure, dedup, and feedback, then deletes
+every test row it created. Run it with:
 
 ```bash
 export PULSE_ZERO_SERVICE_KEY=<supabase secret key>
@@ -175,3 +195,8 @@ Run this before any future change to `public/index.html` or `bin/pulse-push` shi
 requires Chrome running with remote debugging on port 9222 (`chrome-debug-launcher.sh` —
 see `~/Projects/CLAUDE.md` "Only debug Chrome ever runs") and Python 3 with no extra
 dependencies (uses the CDP HTTP/WebSocket endpoints directly, no Playwright install).
+The signed-session function also has focused fail-closed tests:
+
+```bash
+node --test test/pulse-agent-session.test.js
+```

@@ -22,10 +22,13 @@ What it does:
   3. Asserts:
      - no duplicate OPEN action cards with the same title+source
      - a --key push replaces the existing OPEN card in place (same id)
+     - 101 terminal rows cannot crowd an OPEN card out of the board query
      - a resolved ("done") card is NOT visible on load, but appears once the
        "Recently done" disclosure is opened
      - the decision card's "Other" textresp input has non-equal computed
        background/text colors in both light and dark prefers-color-scheme
+     - authenticated Pulse voice uses the signed-session broker, and the
+       task-scoped Ask Pulse affordance expands and focuses its safe input
      - no mailto: link is served for feedback; a soma-feedback chip element
        is present in the DOM instead
   4. Deletes every row it created (by created_by == TEST_SOURCE) so the board
@@ -219,6 +222,22 @@ def main():
         subprocess.run([PULSE_PUSH, "resolve", "--id", done_id, "--note", "smoke test — pre-marked done"],
                         capture_output=True, text=True, env={**os.environ, "PULSE_ZERO_SERVICE_KEY": key})
 
+    # Regression fixture for the old all-status ORDER/LIMIT query: answered
+    # sorts before open, so 101 terminal rows used to make every active card
+    # disappear. Ancient timestamps keep these rows out of the bounded
+    # "Recently done" slice in the corrected two-query implementation.
+    history_noise = [{
+        "app_id": APP_ID,
+        "type": "brief",
+        "payload": {"title": f"Smoke history noise {NONCE} #{i}", "lines": "terminal fixture"},
+        "status": "answered",
+        "answer": {"action_id": "ack", "value": "ack"},
+        "created_by": TEST_SOURCE,
+        "created_at": f"2020-01-01T00:{i // 60:02d}:{i % 60:02d}Z",
+        "answered_at": f"2020-01-01T00:{i // 60:02d}:{i % 60:02d}Z",
+    } for i in range(101)]
+    sb_rest("POST", "pulse_cards", key, body=history_noise)
+
     # ── DB-level assertions (ground truth, independent of DOM rendering) ──
     print("\nDB-level assertions ...")
     rows = sb_rest("GET", "pulse_cards", key, params={
@@ -270,7 +289,50 @@ def main():
 
         tab.navigate(BOARD_URL, wait_ms=3000)
         wait_for(tab, "!!document.getElementById('cards')", timeout_s=8)
-        wait_for(tab, f"document.body.innerText.includes({json.dumps(dup_title)})", timeout_s=8)
+        active_survived = wait_for(
+            tab,
+            f"document.body.innerText.includes({json.dumps(dup_title)})",
+            timeout_s=8,
+        )
+        if active_survived:
+            ok("open card remains visible with 101 terminal rows")
+        else:
+            fail("open card remains visible with 101 terminal rows", "active card was crowded out")
+
+        pulse_controls = tab.eval("""(async () => {
+            const bar = document.getElementById('talk-bar');
+            const ask = [...document.querySelectorAll('button')]
+                .find(b => b.textContent.trim() === 'Ask Pulse');
+            if (ask) ask.click();
+            const input = document.querySelector('.comment-input');
+            const { data: { session } } = await sb.auth.getSession();
+            const signed = await fetch('/.netlify/functions/pulse-agent-session', {
+                headers: { Authorization: `Bearer ${session.access_token}` },
+                cache: 'no-store',
+            });
+            const signedBody = await signed.json().catch(() => ({}));
+            return {
+                barVisible: !!bar && !bar.hidden,
+                askPresent: !!ask,
+                inputFocused: document.activeElement === input,
+                safePlaceholder: !!input && input.placeholder.includes('never paste credentials'),
+                signedStatus: signed.status,
+                signedShape: typeof signedBody.signed_url === 'string' &&
+                    signedBody.signed_url.startsWith('wss://'),
+            };
+        })()""", await_promise=True)
+        if pulse_controls["barVisible"]:
+            ok("voice control visible after Pulse authentication")
+        else:
+            fail("voice control visible after Pulse authentication")
+        if pulse_controls["askPresent"] and pulse_controls["inputFocused"] and pulse_controls["safePlaceholder"]:
+            ok("Ask Pulse opens and focuses the task-scoped safe input")
+        else:
+            fail("Ask Pulse opens and focuses the task-scoped safe input", str(pulse_controls))
+        if pulse_controls["signedStatus"] == 200 and pulse_controls["signedShape"]:
+            ok("authenticated signed-session broker returns a WebSocket URL")
+        else:
+            fail("authenticated signed-session broker returns a WebSocket URL", str(pulse_controls))
 
         # done card hidden by default, revealed by disclosure
         hidden_before = tab.eval(f"!document.getElementById('cards').innerText.includes({json.dumps(done_title)})")

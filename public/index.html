@@ -192,13 +192,14 @@
   }
   #talk-btn.start { background: #2f6fed; color: #fff; }
   #talk-btn.end { background: #3a1414; color: #ff8080; }
+  #talk-bar[hidden] { display: none; }
 </style>
 </head>
 <body>
 
 <div id="app"></div>
 
-<div id="talk-bar">
+<div id="talk-bar" hidden>
   <div id="talk-orb-wrap"><div id="talk-orb" class="off"></div></div>
   <div id="talk-info">
     <div id="talk-label">Talk to Pulse</div>
@@ -213,8 +214,18 @@ const SUPABASE_ANON_KEY = 'sb_publishable_vi2qDWjozUJ5mi9dwirkLA_rj6UaqLf';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const APP_ID = 'pulse-zero';
 const app = document.getElementById('app');
+window.pulseSupabase = sb;
+window.pulseAuthenticated = false;
 
 function esc(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function setPulseSession(session) {
+  window.pulseAuthenticated = !!session;
+  document.getElementById('talk-bar').hidden = !session;
+  window.dispatchEvent(new CustomEvent('pulse-auth-state', {
+    detail: { authenticated: !!session },
+  }));
+}
 
 // ── STEP_ACTIONS_CONVENTION (2026-07-27, ren) ────────────────────────────
 // CONTRACT.md left action-type encoding on payload.steps ambiguous — the
@@ -319,26 +330,25 @@ function stepsAccordion(rawSteps, stepState, stepActions) {
     </div>`;
 }
 
-// Poll a single mac_commands row until it leaves status='open' (the daemon
-// polls every ~2s; a generous 30s cap covers a busy Mac without spinning
-// forever). Realtime would work too but a targeted per-row poll is simpler
-// here and doesn't touch the broad pulse_cards/pulse_card_comments channel
-// already wired for the rest of the board.
+// Poll a single mac_commands row until it leaves status='open'. open_session
+// can legitimately take up to 60s, so the UI observes for 75s and reports an
+// indeterminate state instead of inventing a failure while the Mac may still
+// be completing the command.
 async function pollMacCommand(id, onUpdate) {
   const started = Date.now();
-  while (Date.now() - started < 30000) {
+  while (Date.now() - started < 75000) {
     const { data, error } = await sb.from('mac_commands').select('status,result').eq('id', id).single();
     if (error) { onUpdate({ status: 'failed', result: { error: error.message } }); return; }
     if (data.status !== 'open') { onUpdate(data); return; }
     await new Promise(r => setTimeout(r, 1500));
   }
-  onUpdate({ status: 'failed', result: { error: 'timed out waiting for the Mac bridge (30s) — it may still complete; check again shortly.' } });
+  onUpdate({ status: 'observing', result: { error: 'Still working on the Mac. This button will not send a duplicate; check the Mac before trying again.' } });
 }
 
 function afkAwareMessage(result) {
   const err = (result && result.error) || '';
   if (err.startsWith('refused: automation-lock state is')) {
-    return "Mike's on his Mac right now — try again when he's away.";
+    return 'This was treated as background automation, so the Mac safely refused it. Reload Pulse and click again.';
   }
   return err || 'Something went wrong.';
 }
@@ -349,8 +359,15 @@ async function runStepAction(cardId, stepIdx, action, btn) {
   const li = btn.closest('.step-item');
   let note = li.querySelector('.step-action-note');
   if (!note) { note = document.createElement('div'); note.className = 'step-action-note'; li.appendChild(note); }
+  const payload = { ...(action.payload || {}) };
+  if (action.command === 'open_session') {
+    // Consent is created by the authenticated click, never stored on the card.
+    // The bridge accepts it only while fresh and only for this one handoff.
+    payload.interaction = 'user_click';
+    payload.requested_at = new Date().toISOString();
+  }
   const { data, error } = await sb.from('mac_commands')
-    .insert({ command: action.command, payload: action.payload || {}, status: 'open' })
+    .insert({ command: action.command, payload, status: 'open' })
     .select().single();
   if (error) {
     btn.disabled = false;
@@ -371,6 +388,9 @@ async function runStepAction(cardId, stepIdx, action, btn) {
         li.classList.add('checked');
         await persistStepState(cardId, stepIdx, true);
       }
+    } else if (result.status === 'observing') {
+      btn.textContent = 'Still working…';
+      note.textContent = afkAwareMessage(result.result);
     } else {
       btn.disabled = false;
       btn.textContent = stepActionLabel(action.command);
@@ -613,8 +633,8 @@ function renderComments(c) {
   const list = comments.map(cm => `
     <div class="comment-item"><span class="who">${esc(cm.author)} · ${esc(new Date(cm.created_at).toLocaleString())}</span>${esc(cm.body)}</div>
   `).join('');
-  const pendingNote = pending ? `<div class="comment-pending">Dee is thinking</div>` : '';
-  const toggleLabel = comments.length ? `Comments (${comments.length})` : 'Add a comment';
+  const pendingNote = pending ? `<div class="comment-pending">Pulse is asking the team…</div>` : '';
+  const toggleLabel = comments.length ? `Pulse thread (${comments.length})` : 'Ask Pulse about this task';
   return `
     <div class="comments">
       <button class="comment-toggle" data-action="toggle-comments">${toggleLabel}</button>
@@ -622,7 +642,7 @@ function renderComments(c) {
         ${list}
         ${pendingNote}
         <div class="comment-input-row">
-          <input class="textresp comment-input" placeholder="Add a comment..." />
+          <input class="textresp comment-input" placeholder="Ask about this task — never paste credentials here" />
           <button class="btn-secondary" data-action="send-comment">Send</button>
         </div>
       </div>
@@ -649,6 +669,15 @@ function wireComments(div, c) {
   input.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
 }
 
+function focusPulseThread(div, c) {
+  const body = div.querySelector('.comment-body');
+  const input = div.querySelector('.comment-input');
+  if (!body || !input) return;
+  body.style.display = 'block';
+  uiState.openComments.add(c.id);
+  input.focus();
+}
+
 function renderCard(c) {
   const p = c.payload || {};
   const answered = c.status !== 'open';
@@ -667,6 +696,7 @@ function renderCard(c) {
         ${p.url ? `<button class="btn-secondary" data-action="preview">Preview</button>` : ''}
         ${guideBtn}
         ${yeshieBtn}
+        <button class="btn-secondary" data-action="ask-pulse">Ask Pulse</button>
         <button class="btn-primary" data-action="done">Done</button>
         <button class="btn-secondary" data-action="snooze">Snooze</button>
         <button class="btn-secondary" data-action="not-mine">Not mine</button>
@@ -717,6 +747,7 @@ function renderCard(c) {
         if (action === 'preview') { togglePreview(div, p.url); return; }
         if (action === 'guide') { guideMeSteps(c.yeshie_steps); return; }
         if (action === 'yeshie-run') { await runYeshieTask(c.yeshie_task, btn); return; }
+        if (action === 'ask-pulse') { focusPulseThread(div, c); return; }
         if (action === 'not-mine') { await bounceByMike(c); return; }
         if (action === 'snooze') { openSnoozeMenu(c); return; }
         if (action === 'other' || action === 'change') {
@@ -760,12 +791,25 @@ async function answerCard(id, answer) {
 }
 
 async function loadCards() {
-  const { data, error } = await sb.from('pulse_cards')
-    .select('*, pulse_card_comments(*)')
-    .eq('app_id', APP_ID)
-    .order('status', { ascending: true })
-    .order('created_at', { ascending: false })
-    .limit(100);
+  // Active work and terminal history are separate queries. A single
+  // status-sorted LIMIT could otherwise hide every open card once terminal
+  // history grows past 100 rows.
+  const [activeResult, historyResult] = await Promise.all([
+    sb.from('pulse_cards')
+      .select('*, pulse_card_comments(*)')
+      .eq('app_id', APP_ID)
+      .eq('status', 'open')
+      .order('created_at', { ascending: false })
+      .limit(100),
+    sb.from('pulse_cards')
+      .select('*, pulse_card_comments(*)')
+      .eq('app_id', APP_ID)
+      .neq('status', 'open')
+      .order('created_at', { ascending: false })
+      .limit(45),
+  ]);
+  const error = activeResult.error || historyResult.error;
+  const data = [...(activeResult.data || []), ...(historyResult.data || [])];
   const main = document.getElementById('cards');
   if (!main) return;
   main.innerHTML = '';
@@ -832,8 +876,10 @@ async function renderApp(session) {
 
 async function boot() {
   const { data: { session } } = await sb.auth.getSession();
+  setPulseSession(session);
   if (session) { renderApp(session); } else { renderLogin(); }
   sb.auth.onAuthStateChange((event, session) => {
+    setPulseSession(session);
     if (session) renderApp(session); else renderLogin();
   });
 }
@@ -843,7 +889,6 @@ boot();
 <script type="module">
   import { Conversation } from 'https://esm.sh/@elevenlabs/client@latest';
 
-  const AGENT_ID = 'agent_9901kxk0yphafwrvpes82h4me49n';
   const CONSENT_KEY = 'pulse-talk-consented';
 
   const orb = document.getElementById('talk-orb');
@@ -854,6 +899,20 @@ boot();
   let conversation = null;
   let starting = false;
   let wantActive = false; // user's intent: should we be connected right now
+
+  async function getSignedUrl() {
+    const { data: { session } } = await window.pulseSupabase.auth.getSession();
+    if (!session || !session.access_token) throw new Error('Sign in to Pulse first.');
+    const response = await fetch('/.netlify/functions/pulse-agent-session', {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+      cache: 'no-store',
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || !body.signed_url) {
+      throw new Error(body.error || 'Could not authorize Pulse voice.');
+    }
+    return body.signed_url;
+  }
 
   function setOrb(mode) {
     orb.className = mode; // 'off' | 'listening' | 'speaking' | 'thinking'
@@ -941,9 +1000,10 @@ boot();
     }
 
     try {
+      const signedUrl = await getSignedUrl();
       conversation = await Promise.race([
         Conversation.startSession({
-          agentId: AGENT_ID,
+          signedUrl,
           onConnect: () => { starting = false; setUi('listening'); },
           onDisconnect: () => { conversation = null; if (wantActive) { wantActive = false; } setUi('off'); },
           onError: (err) => { conversation = null; starting = false; wantActive = false; setUi('error', String(err)); },
@@ -988,11 +1048,19 @@ boot();
     }
   });
 
-  // Auto-resume ambient listening on load if Mike has already granted mic
-  // permission once on this device — first-ever tap still required (browser
-  // audio-autoplay + mic-permission gesture rule), every load after that is
-  // hands-free.
-  if (localStorage.getItem(CONSENT_KEY) === '1' && !document.hidden) {
+  // Voice exists only inside Pulse's authenticated boundary. Sign-out ends
+  // the live session immediately; authenticated reloads can still honor the
+  // user's previous ambient-listening choice.
+  window.addEventListener('pulse-auth-state', ({ detail }) => {
+    if (!detail.authenticated) {
+      endTalk();
+    } else if (localStorage.getItem(CONSENT_KEY) === '1' && !document.hidden) {
+      startTalk();
+    }
+  });
+  if (window.pulseAuthenticated &&
+      localStorage.getItem(CONSENT_KEY) === '1' &&
+      !document.hidden) {
     startTalk();
   }
 </script>
