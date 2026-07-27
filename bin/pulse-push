@@ -163,6 +163,14 @@ def push(args, key, url):
             existing_card = existing[0]
             card_id = existing_card["id"]
             patch_body = {k: v for k, v in row.items() if k not in ("app_id", "status")}
+            if ctype == "action":
+                old_steps = (existing_card.get("payload") or {}).get("steps")
+                new_steps = (row.get("payload") or {}).get("steps")
+                if old_steps != new_steps:
+                    # step_state is index-aligned. Keeping old checks after a
+                    # rewritten checklist silently marks unrelated new work
+                    # complete, so reset it whenever the step text changes.
+                    patch_body["step_state"] = {}
 
             # Snooze-aware re-push: a snoozed card re-pushed with the same
             # --key should NOT jump back into view just because a session
@@ -417,7 +425,7 @@ def main():
                     help="newline-separated human steps rendered as an overlay checklist ('Guide me')")
     a.add_argument("--step-actions", dest="step_actions",
                     help="JSON array, index-aligned with --steps lines (0-based), each entry either "
-                         "null or {\"command\": \"open_session|clipboard_set|clipboard_take_and_deploy\", "
+                         "null or {\"command\": \"open_url|open_session|clipboard_set|clipboard_take_and_deploy\", "
                          "\"payload\": {...}} per pulse-mac-bridge/CONTRACT.md. Renders a real button on "
                          "that step in the board UI. See public/index.html STEP_ACTIONS_CONVENTION comment.")
     a.add_argument("--yeshie-task", dest="yeshie_task",

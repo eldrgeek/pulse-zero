@@ -244,7 +244,9 @@ function setPulseSession(session) {
 // array, index-aligned 1:1 with the lines parseSteps() produces (0-based).
 // Each entry is either null/absent or {command, payload} exactly per
 // pulse-mac-bridge/CONTRACT.md's mac_commands shapes (open_session,
-// clipboard_set, clipboard_take_and_deploy). pulse-push's --step-actions
+// clipboard_set, clipboard_take_and_deploy). open_url is handled entirely
+// in the authenticated browser; the other commands use mac_commands.
+// pulse-push's --step-actions
 // flag writes this. No DB migration needed — payload is already freeform
 // jsonb. This is additive/optional: cards without step_actions render
 // exactly as before (checklist only, no button).
@@ -252,9 +254,11 @@ function stepAction(stepActions, idx) {
   return (stepActions && stepActions[idx]) || null;
 }
 
-function stepActionLabel(command) {
-  return { open_session: 'Continue on Mac', clipboard_set: 'Copy to clipboard',
-    clipboard_take_and_deploy: 'Deploy from clipboard' }[command] || 'Run';
+function stepActionLabel(action) {
+  if (action && action.label) return action.label;
+  return { open_url: 'Open page', open_session: 'Continue on Mac',
+    clipboard_set: 'Copy to clipboard',
+    clipboard_take_and_deploy: 'Install from clipboard' }[(action || {}).command] || 'Run';
 }
 
 // Mike's on-Mac / off-Mac + comment-thread UI state that must survive a
@@ -365,7 +369,7 @@ function stepsAccordion(rawSteps, stepState, stepActions) {
     const checked = !!stepState[i];
     const action = stepAction(stepActions, i);
     const btn = action
-      ? `<button class="step-action-btn" data-step-action-idx="${i}">${esc(stepActionLabel(action.command))}</button>`
+      ? `<button class="step-action-btn" data-step-action-idx="${i}">${esc(stepActionLabel(action))}</button>`
       : '';
     return `
     <li class="step-item${checked ? ' checked' : ''}" data-step-idx="${i}">
@@ -407,10 +411,33 @@ function afkAwareMessage(result) {
 
 async function runStepAction(cardId, stepIdx, action, btn) {
   btn.disabled = true;
-  btn.textContent = 'Sending…';
   const li = btn.closest('.step-item');
   let note = li.querySelector('.step-action-note');
   if (!note) { note = document.createElement('div'); note.className = 'step-action-note'; li.appendChild(note); }
+  if (action.command === 'open_url') {
+    const rawUrl = (action.payload || {}).url;
+    try {
+      const parsed = new URL(rawUrl);
+      if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('unsupported protocol');
+      window.open(parsed.href, '_blank', 'noopener');
+      btn.textContent = 'Opened';
+      btn.classList.add('state-done');
+      note.textContent = action.success_message || 'Opened in a new tab.';
+      const cb = li.querySelector('.step-check');
+      if (cb && !cb.checked) {
+        cb.checked = true;
+        li.classList.add('checked');
+        await persistStepState(cardId, stepIdx, true);
+      }
+    } catch (_) {
+      btn.disabled = false;
+      btn.textContent = stepActionLabel(action);
+      btn.classList.add('state-failed');
+      note.textContent = 'This action has an invalid link. Ask Pulse to repair the card.';
+    }
+    return;
+  }
+  btn.textContent = 'Sending…';
   const payload = { ...(action.payload || {}) };
   if (action.command === 'open_session') {
     // Consent is created by the authenticated click, never stored on the card.
@@ -423,7 +450,7 @@ async function runStepAction(cardId, stepIdx, action, btn) {
     .select().single();
   if (error) {
     btn.disabled = false;
-    btn.textContent = stepActionLabel(action.command);
+    btn.textContent = stepActionLabel(action);
     note.textContent = 'Failed to send: ' + error.message;
     return;
   }
@@ -433,7 +460,7 @@ async function runStepAction(cardId, stepIdx, action, btn) {
     if (result.status === 'done') {
       btn.textContent = 'Done';
       btn.classList.add('state-done');
-      note.textContent = 'Done.';
+      note.textContent = action.success_message || 'Done.';
       const cb = li.querySelector('.step-check');
       if (cb && !cb.checked) {
         cb.checked = true;
@@ -445,7 +472,7 @@ async function runStepAction(cardId, stepIdx, action, btn) {
       note.textContent = afkAwareMessage(result.result);
     } else {
       btn.disabled = false;
-      btn.textContent = stepActionLabel(action.command);
+      btn.textContent = stepActionLabel(action);
       btn.classList.add('state-failed');
       note.textContent = afkAwareMessage(result.result);
     }
@@ -655,7 +682,20 @@ function renderSnoozedCard(c) {
 // Commenting never touches status — see FEATURE_2 in README. Comments are
 // fetched embedded on each card via a PostgREST FK join (pulse_card_comments
 // has a FK to pulse_cards), so no extra round trip per card.
+function looksLikeSecret(text) {
+  const value = (text || '').trim();
+  if (!value) return false;
+  const compact = value.replace(/\s+/g, '');
+  return /^AIza[0-9A-Za-z_-]{20,}$/.test(compact) ||
+    /^(sk-(?:ant|proj|live|test)-|sb_secret_|nfp_)[0-9A-Za-z_-]{12,}$/i.test(compact) ||
+    /^[A-Za-z0-9]{16}$/.test(compact);
+}
+
 async function postComment(cardId, body) {
+  if (looksLikeSecret(body)) {
+    alert('That looks like a credential. It was not sent. Keep it on the Mac clipboard and use the task’s Install & verify button.');
+    return;
+  }
   const nowIso = new Date().toISOString();
   const { error } = await sb.from('pulse_card_comments').insert({ card_id: cardId, author: 'mike', body });
   if (error) { alert('Failed: ' + error.message); return; }

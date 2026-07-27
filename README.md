@@ -63,6 +63,14 @@ bin/pulse-push action --title "Renew the TLS cert" --url "https://dash.example.c
 - `--yeshie-steps` — newline-separated human steps. Renders as a **[Guide me]** overlay checklist on the card. No wiring dependency, always works. Pass plain phrases, not pre-numbered lines — the overlay renders an `<ol>` and numbers them itself (`1. 1. Click...` is a double-number if your steps text already starts with `1.`).
 - `--yeshie-task` — inline JSON or a path to a Yeshie recipe/payload file. Renders a **[Yeshie: do it — I'll watch]** button, but only when the board is loaded with `?yeshie=1` (see Yeshie wiring status below).
 
+Optional `--step-actions` turns individual checklist rows into operations.
+The JSON array is index-aligned with `--steps`; each entry is `null` or an
+object with `command`, `payload`, and optional `label` / `success_message`.
+`open_url` is handled in the browser. `open_session`, `clipboard_set`, and
+`clipboard_take_and_deploy` go through the authenticated Mac bridge. When a
+deduped card's step text changes, `pulse-push` clears its index-aligned
+`step_state` so stale checkmarks cannot mark new work complete.
+
 Board contract enforcement: `--title` is required, imperative, and rejected (exit 1) over 60 chars. `--url` is not required but you'll get a warning without one.
 
 ### Tower subcommands
@@ -128,10 +136,17 @@ Action cards render as one line (title) + a button row:
 - **Not mine** — Mike bounces his own card (`status=bounced`, `bounce_reason="Not mine (Mike)"`); shows up in Tower's Bounced (RSI) section.
 - **Snooze** — every card type (action/verdict/decision/brief) has this. Opens a preset picker (Tonight / Tomorrow morning / Next week, computed client-side in Mike's local time); the card leaves the default view until then. See "Snooze" under Pushing cards above for the CLI-side dedup interaction.
 
+Checklist rows may also carry a compact action button. Labels describe the
+actual outcome (`Open Gemini API Keys`, `Install & verify`) rather than the
+transport. Credential cards must say that secrets stay on the Mac clipboard
+and must never be pasted into Pulse chat.
+
 Every card (including answered/bounced/done ones) has a task-scoped **Pulse
 thread** at the bottom — see "Comments" above. Open action cards also show an
 **Ask Pulse** button that expands and focuses the same thread. The input warns
 not to paste credentials; replies retain their actual worker attribution.
+The browser also refuses obvious Google API keys, 16-character App Passwords,
+and common provider-key prefixes before a comment reaches the database.
 Commenting never changes status.
 
 VERDICT/DECISION/BRIEF cards are otherwise unchanged. SOMA Auth magic-link allowlist is unchanged.

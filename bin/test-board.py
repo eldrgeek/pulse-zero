@@ -196,11 +196,27 @@ def main():
         ok("dedup-safety-net: second identical push skipped (stdout)")
 
     key_slug = f"smoke-key-{NONCE}"
+    old_step = f"Open old smoke page {NONCE}"
+    new_step = f"Open current smoke page {NONCE}"
+    step_action_label = f"Open smoke page {NONCE}"
     k1 = subprocess.run([PULSE_PUSH, "action", "--title", f"Smoke key card v1 {NONCE}",
-                         "--url", "https://example.test", "--source", TEST_SOURCE, "--key", key_slug],
+                         "--url", "https://example.test", "--source", TEST_SOURCE, "--key", key_slug,
+                         "--steps", old_step],
                         capture_output=True, text=True, env={**os.environ, "PULSE_ZERO_SERVICE_KEY": key})
+    seeded = sb_rest("GET", "pulse_cards", key, params={
+        "app_id": f"eq.{APP_ID}", "dedupe_key": f"eq.{key_slug}", "limit": "1",
+    })
+    if seeded:
+        sb_rest("PATCH", "pulse_cards", key, params={"id": f"eq.{seeded[0]['id']}"},
+                body={"step_state": {"0": True}})
     k2 = subprocess.run([PULSE_PUSH, "action", "--title", f"Smoke key card v2 {NONCE}",
-                         "--url", "https://example.test", "--source", TEST_SOURCE, "--key", key_slug],
+                         "--url", "https://example.test", "--source", TEST_SOURCE, "--key", key_slug,
+                         "--steps", new_step,
+                         "--step-actions", json.dumps([{
+                             "command": "open_url",
+                             "label": step_action_label,
+                             "payload": {"url": "https://example.test/current"},
+                         }])],
                         capture_output=True, text=True, env={**os.environ, "PULSE_ZERO_SERVICE_KEY": key})
     print("  key push #1:", k1.stdout.strip())
     print("  key push #2:", k2.stdout.strip())
@@ -255,6 +271,11 @@ def main():
         ok("--key push replaces existing OPEN card in place", f"1 row, title updated to v2, id={key_rows[0]['id']}")
     else:
         fail("--key push replaces existing OPEN card in place", f"found {len(key_rows)} rows: {[r.get('payload',{}).get('title') for r in key_rows]}")
+    if len(key_rows) == 1 and key_rows[0].get("step_state") == {}:
+        ok("changed step text clears stale index-aligned checkmarks")
+    else:
+        fail("changed step text clears stale index-aligned checkmarks",
+             f"step_state={key_rows[0].get('step_state') if key_rows else None}")
 
     done_rows = [r for r in rows if r.get("payload", {}).get("title") == done_title]
     if done_rows and done_rows[0]["status"] == "resolved":
@@ -298,6 +319,24 @@ def main():
             ok("open card remains visible with 101 terminal rows")
         else:
             fail("open card remains visible with 101 terminal rows", "active card was crowded out")
+
+        step_action_present = tab.eval(
+            f"[...document.querySelectorAll('.step-action-btn')].some(b => b.textContent.trim() === {json.dumps(step_action_label)})"
+        )
+        if step_action_present:
+            ok("custom step-action label renders")
+        else:
+            fail("custom step-action label renders", step_action_label)
+
+        secret_guard = tab.eval("""({
+            gemini: looksLikeSecret('AIza' + 'A'.repeat(35)),
+            appPassword: looksLikeSecret('abcd efgh ijkl mnop'),
+            normalComment: looksLikeSecret('Please explain why the service check failed.'),
+        })""")
+        if secret_guard == {"gemini": True, "appPassword": True, "normalComment": False}:
+            ok("Ask Pulse blocks obvious credentials without blocking normal comments")
+        else:
+            fail("Ask Pulse blocks obvious credentials without blocking normal comments", str(secret_guard))
 
         pulse_controls = tab.eval("""(async () => {
             const bar = document.getElementById('talk-bar');
