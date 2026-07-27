@@ -54,6 +54,16 @@
   .step-item label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; width: 100%; }
   .step-item input[type="checkbox"] { flex-shrink: 0; width: 18px; height: 18px; margin: 1px 0 0; accent-color: #2f6fed; }
   .step-item.checked span { text-decoration: line-through; opacity: 0.55; }
+  .step-item { flex-wrap: wrap; }
+  .step-item label { flex: 1 1 auto; min-width: 0; }
+  .step-action-btn {
+    flex-shrink: 0; font-size: 12.5px; font-weight: 650; padding: 7px 12px; border-radius: 8px;
+    background: #1d3a6e; color: #a8c8ff; border: 1px solid #2f5fc4; margin-left: 26px;
+  }
+  .step-action-btn:disabled { opacity: 0.6; cursor: default; }
+  .step-action-btn.state-failed { background: #3a1414; color: #ff9a9a; border-color: #5a2020; }
+  .step-action-btn.state-done { background: #12302e; color: #4ecdc4; border-color: #1c4a46; }
+  .step-action-note { flex-basis: 100%; margin: 4px 0 0 26px; font-size: 12px; opacity: 0.75; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
   button {
     font: inherit; font-size: 14px; font-weight: 600; padding: 10px 16px; border-radius: 10px;
@@ -104,6 +114,8 @@
   @media (prefers-color-scheme: light) { .comments { border-top-color: #e3e5e8; } }
   .comment-item { font-size: 13.5px; margin-bottom: 6px; line-height: 1.4; }
   .comment-item .who { opacity: 0.55; font-size: 12px; margin-right: 6px; }
+  .comment-pending { font-size: 13px; font-style: italic; margin: 4px 0; animation: pending-pulse 1.4s ease-in-out infinite; }
+  @keyframes pending-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.85; } }
   .comment-toggle { background: none; border: none; padding: 0; font-size: 13px; font-weight: 600; opacity: 0.7; cursor: pointer; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
   .comment-input-row { display: flex; gap: 8px; margin-top: 8px; }
   .comment-input-row input { flex: 1; }
@@ -204,6 +216,35 @@ const app = document.getElementById('app');
 
 function esc(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+// ── STEP_ACTIONS_CONVENTION (2026-07-27, ren) ────────────────────────────
+// CONTRACT.md left action-type encoding on payload.steps ambiguous — the
+// real card checked ('vps-group-bc-creds-restore') just has plain numbered
+// text, no marker. Convention adopted: an optional payload.step_actions
+// array, index-aligned 1:1 with the lines parseSteps() produces (0-based).
+// Each entry is either null/absent or {command, payload} exactly per
+// pulse-mac-bridge/CONTRACT.md's mac_commands shapes (open_session,
+// clipboard_set, clipboard_take_and_deploy). pulse-push's --step-actions
+// flag writes this. No DB migration needed — payload is already freeform
+// jsonb. This is additive/optional: cards without step_actions render
+// exactly as before (checklist only, no button).
+function stepAction(stepActions, idx) {
+  return (stepActions && stepActions[idx]) || null;
+}
+
+function stepActionLabel(command) {
+  return { open_session: 'Continue on Mac', clipboard_set: 'Copy to clipboard',
+    clipboard_take_and_deploy: 'Deploy from clipboard' }[command] || 'Run';
+}
+
+// Mike's on-Mac / off-Mac + comment-thread UI state that must survive a
+// loadCards() full re-render (realtime pulses on unrelated cards would
+// otherwise silently collapse an open comment thread mid-conversation).
+const uiState = {
+  openSteps: new Set(),      // card ids with the steps accordion expanded
+  openComments: new Set(),   // card ids with the comment thread expanded
+  pendingComment: new Map(), // card id -> ISO timestamp of Mike's last un-replied comment
+};
+
 async function renderLogin() {
   app.innerHTML = `
     <div class="login"><div class="login-box">
@@ -253,13 +294,22 @@ function parseSteps(raw) {
     .map(s => s.replace(/^\d+[.)]\s*/, ''));
 }
 
-function stepsAccordion(rawSteps) {
+function stepsAccordion(rawSteps, stepState, stepActions) {
   const items = parseSteps(rawSteps);
   if (!items.length) return '';
-  const list = items.map((s, i) => `
-    <li class="step-item" data-step-idx="${i}">
-      <label><input type="checkbox" class="step-check" /><span>${esc(s)}</span></label>
-    </li>`).join('');
+  stepState = stepState || {};
+  const list = items.map((s, i) => {
+    const checked = !!stepState[i];
+    const action = stepAction(stepActions, i);
+    const btn = action
+      ? `<button class="step-action-btn" data-step-action-idx="${i}">${esc(stepActionLabel(action.command))}</button>`
+      : '';
+    return `
+    <li class="step-item${checked ? ' checked' : ''}" data-step-idx="${i}">
+      <label><input type="checkbox" class="step-check" ${checked ? 'checked' : ''} /><span>${esc(s)}</span></label>
+      ${btn}
+    </li>`;
+  }).join('');
   return `
     <div class="steps-accordion">
       <button class="steps-toggle" data-action="toggle-steps">Steps (${items.length})</button>
@@ -269,13 +319,97 @@ function stepsAccordion(rawSteps) {
     </div>`;
 }
 
-function wireSteps(div) {
+// Poll a single mac_commands row until it leaves status='open' (the daemon
+// polls every ~2s; a generous 30s cap covers a busy Mac without spinning
+// forever). Realtime would work too but a targeted per-row poll is simpler
+// here and doesn't touch the broad pulse_cards/pulse_card_comments channel
+// already wired for the rest of the board.
+async function pollMacCommand(id, onUpdate) {
+  const started = Date.now();
+  while (Date.now() - started < 30000) {
+    const { data, error } = await sb.from('mac_commands').select('status,result').eq('id', id).single();
+    if (error) { onUpdate({ status: 'failed', result: { error: error.message } }); return; }
+    if (data.status !== 'open') { onUpdate(data); return; }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  onUpdate({ status: 'failed', result: { error: 'timed out waiting for the Mac bridge (30s) — it may still complete; check again shortly.' } });
+}
+
+function afkAwareMessage(result) {
+  const err = (result && result.error) || '';
+  if (err.startsWith('refused: automation-lock state is')) {
+    return "Mike's on his Mac right now — try again when he's away.";
+  }
+  return err || 'Something went wrong.';
+}
+
+async function runStepAction(cardId, stepIdx, action, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  const li = btn.closest('.step-item');
+  let note = li.querySelector('.step-action-note');
+  if (!note) { note = document.createElement('div'); note.className = 'step-action-note'; li.appendChild(note); }
+  const { data, error } = await sb.from('mac_commands')
+    .insert({ command: action.command, payload: action.payload || {}, status: 'open' })
+    .select().single();
+  if (error) {
+    btn.disabled = false;
+    btn.textContent = stepActionLabel(action.command);
+    note.textContent = 'Failed to send: ' + error.message;
+    return;
+  }
+  btn.textContent = 'Running on Mac…';
+  note.textContent = 'Picked up by the bridge within ~2s…';
+  pollMacCommand(data.id, async (result) => {
+    if (result.status === 'done') {
+      btn.textContent = 'Done';
+      btn.classList.add('state-done');
+      note.textContent = 'Done.';
+      const cb = li.querySelector('.step-check');
+      if (cb && !cb.checked) {
+        cb.checked = true;
+        li.classList.add('checked');
+        await persistStepState(cardId, stepIdx, true);
+      }
+    } else {
+      btn.disabled = false;
+      btn.textContent = stepActionLabel(action.command);
+      btn.classList.add('state-failed');
+      note.textContent = afkAwareMessage(result.result);
+    }
+  });
+}
+
+async function persistStepState(cardId, idx, value) {
+  const { data } = await sb.from('pulse_cards').select('step_state').eq('id', cardId).single();
+  const merged = { ...(data && data.step_state || {}), [idx]: value };
+  await sb.from('pulse_cards').update({ step_state: merged }).eq('id', cardId);
+}
+
+function wireSteps(div, c) {
   const toggle = div.querySelector('[data-action="toggle-steps"]');
   const body = div.querySelector('.steps-body');
-  if (!toggle || !body) return;
-  toggle.onclick = () => { body.style.display = body.style.display === 'none' ? 'block' : 'none'; };
+  if (toggle && body) {
+    if (uiState.openSteps.has(c.id)) body.style.display = 'block';
+    toggle.onclick = () => {
+      const open = body.style.display !== 'none';
+      body.style.display = open ? 'none' : 'block';
+      if (open) uiState.openSteps.delete(c.id); else uiState.openSteps.add(c.id);
+    };
+  }
   div.querySelectorAll('.step-item input.step-check').forEach(cb => {
-    cb.onchange = () => cb.closest('.step-item').classList.toggle('checked', cb.checked);
+    cb.onchange = async () => {
+      const li = cb.closest('.step-item');
+      li.classList.toggle('checked', cb.checked);
+      const idx = Number(li.dataset.stepIdx);
+      await persistStepState(c.id, idx, cb.checked);
+    };
+  });
+  div.querySelectorAll('.step-action-btn[data-step-action-idx]').forEach(btn => {
+    const idx = Number(btn.dataset.stepActionIdx);
+    const action = stepAction((c.payload || {}).step_actions, idx);
+    if (!action) return;
+    btn.onclick = () => runStepAction(c.id, idx, action, btn);
   });
 }
 
@@ -449,23 +583,44 @@ function renderSnoozedCard(c) {
 // Commenting never touches status — see FEATURE_2 in README. Comments are
 // fetched embedded on each card via a PostgREST FK join (pulse_card_comments
 // has a FK to pulse_cards), so no extra round trip per card.
-async function postComment(cardId, body, div) {
+async function postComment(cardId, body) {
+  const nowIso = new Date().toISOString();
   const { error } = await sb.from('pulse_card_comments').insert({ card_id: cardId, author: 'mike', body });
   if (error) { alert('Failed: ' + error.message); return; }
+  // Optimistic: mark this card as awaiting a reply *before* the realtime
+  // pulse/full reload lands, so "thinking…" shows immediately, not after
+  // whatever latency the subscription round-trip adds.
+  uiState.pendingComment.set(cardId, nowIso);
+  uiState.openComments.add(cardId);
   loadCards();
+}
+
+// A card is "pending" if Mike's last comment on it is newer than any
+// non-mike reply — cleared here (not just on postComment) so a reply that
+// lands from the realtime subscription's own reload correctly turns the
+// indicator off without a manual page refresh.
+function updatePendingState(c, comments) {
+  const pendingSince = uiState.pendingComment.get(c.id);
+  if (!pendingSince) return false;
+  const reply = comments.find(cm => cm.author !== 'mike' && new Date(cm.created_at) > new Date(pendingSince));
+  if (reply) { uiState.pendingComment.delete(c.id); return false; }
+  return true;
 }
 
 function renderComments(c) {
   const comments = (c.pulse_card_comments || []).slice().sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  const pending = updatePendingState(c, comments);
   const list = comments.map(cm => `
     <div class="comment-item"><span class="who">${esc(cm.author)} · ${esc(new Date(cm.created_at).toLocaleString())}</span>${esc(cm.body)}</div>
   `).join('');
+  const pendingNote = pending ? `<div class="comment-pending">Dee is thinking</div>` : '';
   const toggleLabel = comments.length ? `Comments (${comments.length})` : 'Add a comment';
   return `
     <div class="comments">
       <button class="comment-toggle" data-action="toggle-comments">${toggleLabel}</button>
-      <div class="comment-body" style="display:none;">
+      <div class="comment-body" style="display:${uiState.openComments.has(c.id) ? 'block' : 'none'};">
         ${list}
+        ${pendingNote}
         <div class="comment-input-row">
           <input class="textresp comment-input" placeholder="Add a comment..." />
           <button class="btn-secondary" data-action="send-comment">Send</button>
@@ -478,13 +633,17 @@ function wireComments(div, c) {
   const toggle = div.querySelector('[data-action="toggle-comments"]');
   const body = div.querySelector('.comment-body');
   if (!toggle || !body) return;
-  toggle.onclick = () => { body.style.display = body.style.display === 'none' ? 'block' : 'none'; };
+  toggle.onclick = () => {
+    const open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : 'block';
+    if (open) uiState.openComments.delete(c.id); else uiState.openComments.add(c.id);
+  };
   const input = div.querySelector('.comment-input');
   const send = div.querySelector('[data-action="send-comment"]');
   const submit = () => {
     const val = input.value.trim();
     if (!val) return;
-    postComment(c.id, val, div);
+    postComment(c.id, val);
   };
   send.onclick = submit;
   input.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
@@ -502,7 +661,7 @@ function renderCard(c) {
         <p class="title">${esc(p.title)}</p>
       </div>
       ${p.why ? `<p class="why">${esc(p.why)}</p>` : ''}
-      ${stepsAccordion(p.steps)}
+      ${stepsAccordion(p.steps, c.step_state, p.step_actions)}
       <div class="actions">
         ${p.url ? `<button class="btn-primary" data-action="open">Open</button>` : ''}
         ${p.url ? `<button class="btn-secondary" data-action="preview">Preview</button>` : ''}
@@ -576,7 +735,7 @@ function renderCard(c) {
       };
     });
   }
-  wireSteps(div);
+  wireSteps(div, c);
   wireComments(div, c);
   return div;
 }

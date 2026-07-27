@@ -118,6 +118,13 @@ def push(args, key, url):
                 "warn: --url not set. Action cards without a deep link make Mike guess where to go.\n"
             )
         payload = {"title": args.title, "why": args.why or "", "steps": args.steps, "url": args.url}
+        step_actions_raw = getattr(args, "step_actions", None)
+        if step_actions_raw:
+            try:
+                payload["step_actions"] = json.loads(step_actions_raw)
+            except json.JSONDecodeError as e:
+                sys.stderr.write(f"error: --step-actions is not valid JSON: {e}\n")
+                sys.exit(1)
     elif ctype == "verdict":
         payload = {"artifact_name": args.artifact, "url": args.url, "summary": args.summary}
     elif ctype == "decision":
@@ -408,6 +415,11 @@ def main():
     a.add_argument("--key", help="stable dedup key — replaces any existing OPEN card with the same key instead of inserting a new one")
     a.add_argument("--yeshie-steps", dest="yeshie_steps",
                     help="newline-separated human steps rendered as an overlay checklist ('Guide me')")
+    a.add_argument("--step-actions", dest="step_actions",
+                    help="JSON array, index-aligned with --steps lines (0-based), each entry either "
+                         "null or {\"command\": \"open_session|clipboard_set|clipboard_take_and_deploy\", "
+                         "\"payload\": {...}} per pulse-mac-bridge/CONTRACT.md. Renders a real button on "
+                         "that step in the board UI. See public/index.html STEP_ACTIONS_CONVENTION comment.")
     a.add_argument("--yeshie-task", dest="yeshie_task",
                     help="inline JSON or path to a Yeshie recipe/payload.json ('do it while I watch')")
 
