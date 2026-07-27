@@ -70,7 +70,9 @@ object with `command`, `payload`, and optional `label` / `success_message`.
 `clipboard_take_and_deploy` go through the authenticated Mac bridge. When a
 deduped card's step text changes, `pulse-push` clears its index-aligned
 `step_state` so stale checkmarks cannot mark new work complete. A step-level
-`open_url` also satisfies the board's deep-link requirement.
+`open_url` also satisfies the board's deep-link requirement. The CLI rejects
+non-array actions, unknown commands, non-object payloads, and actions beyond
+the number of checklist rows before anything reaches the live board.
 
 Board contract enforcement: `--title` is required, imperative, and rejected (exit 1) over 60 chars. `--url` is not required but you'll get a warning without one.
 

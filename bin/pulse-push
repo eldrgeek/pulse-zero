@@ -54,6 +54,12 @@ DEFAULT_URL = "https://omfwcodoimjmbrhssvfl.supabase.co"
 APP_ID = "pulse-zero"
 BOARD_INBOX = os.path.expanduser("~/Projects/SOMA/board/inbox")
 TITLE_MAX = 60
+STEP_ACTION_COMMANDS = {
+    "open_url",
+    "open_session",
+    "clipboard_set",
+    "clipboard_take_and_deploy",
+}
 
 # Weak signal words that suggest a title is descriptive, not imperative
 # ("Approve the deploy" is imperative; "Deploy approval needed" is not).
@@ -108,6 +114,50 @@ def validate_action_title(title):
         )
 
 
+def parse_step_actions(raw, steps):
+    """Validate the family-facing step-action contract before it reaches the
+    board. This keeps a malformed producer payload from breaking card render
+    or turning an unknown command into a misleading Run button."""
+    try:
+        actions = json.loads(raw)
+    except json.JSONDecodeError as e:
+        sys.stderr.write(f"error: --step-actions is not valid JSON: {e}\n")
+        sys.exit(1)
+    if not isinstance(actions, list):
+        sys.stderr.write("error: --step-actions must be a JSON array\n")
+        sys.exit(1)
+    step_count = len([line for line in (steps or "").splitlines() if line.strip()])
+    if len(actions) > step_count:
+        sys.stderr.write(
+            f"error: --step-actions has {len(actions)} entries but --steps has "
+            f"only {step_count} non-empty lines\n"
+        )
+        sys.exit(1)
+    for idx, action in enumerate(actions):
+        if action is None:
+            continue
+        if not isinstance(action, dict):
+            sys.stderr.write(f"error: --step-actions[{idx}] must be null or an object\n")
+            sys.exit(1)
+        command = action.get("command")
+        if command not in STEP_ACTION_COMMANDS:
+            sys.stderr.write(
+                f"error: --step-actions[{idx}].command must be one of "
+                f"{', '.join(sorted(STEP_ACTION_COMMANDS))}\n"
+            )
+            sys.exit(1)
+        if not isinstance(action.get("payload", {}), dict):
+            sys.stderr.write(f"error: --step-actions[{idx}].payload must be an object\n")
+            sys.exit(1)
+        for text_field in ("label", "success_message"):
+            if text_field in action and not isinstance(action[text_field], str):
+                sys.stderr.write(
+                    f"error: --step-actions[{idx}].{text_field} must be a string\n"
+                )
+                sys.exit(1)
+    return actions
+
+
 def push(args, key, url):
     payload = {}
     ctype = args.type
@@ -116,11 +166,7 @@ def push(args, key, url):
         payload = {"title": args.title, "why": args.why or "", "steps": args.steps, "url": args.url}
         step_actions_raw = getattr(args, "step_actions", None)
         if step_actions_raw:
-            try:
-                payload["step_actions"] = json.loads(step_actions_raw)
-            except json.JSONDecodeError as e:
-                sys.stderr.write(f"error: --step-actions is not valid JSON: {e}\n")
-                sys.exit(1)
+            payload["step_actions"] = parse_step_actions(step_actions_raw, args.steps)
         has_step_link = any(
             action and action.get("command") == "open_url"
             for action in payload.get("step_actions", [])

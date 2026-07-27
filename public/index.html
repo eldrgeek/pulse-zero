@@ -252,7 +252,7 @@ function setPulseSession(session) {
 // jsonb. This is additive/optional: cards without step_actions render
 // exactly as before (checklist only, no button).
 function stepAction(stepActions, idx) {
-  return (stepActions && stepActions[idx]) || null;
+  return (Array.isArray(stepActions) && stepActions[idx]) || null;
 }
 
 function stepActionLabel(action) {
@@ -379,7 +379,7 @@ function stepsAccordion(rawSteps, stepState, stepActions) {
       ${btn}
     </li>`;
   }).join('');
-  const hasActions = !!(stepActions || []).find(Boolean);
+  const hasActions = Array.isArray(stepActions) && stepActions.some(Boolean);
   return `
     <div class="steps-accordion">
       <button class="steps-toggle" data-action="toggle-steps" aria-expanded="false">${hasActions ? 'Steps & actions' : 'Steps'} (${items.length})</button>
