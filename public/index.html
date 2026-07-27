@@ -57,9 +57,10 @@
   .step-item { flex-wrap: wrap; }
   .step-item label { flex: 1 1 auto; min-width: 0; }
   .step-action-btn {
-    flex-shrink: 0; font-size: 12.5px; font-weight: 650; padding: 7px 12px; border-radius: 8px;
+    flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+    font: inherit; font-size: 12.5px; font-weight: 650; padding: 7px 12px; border-radius: 8px;
     min-height: 44px; background: #1d3a6e; color: #a8c8ff;
-    border: 1px solid #2f5fc4; margin-left: 26px;
+    border: 1px solid #2f5fc4; margin-left: 26px; cursor: pointer; text-decoration: none;
   }
   .step-action-btn:disabled { opacity: 0.6; cursor: default; }
   .step-action-btn.state-failed { background: #3a1414; color: #ff9a9a; border-color: #5a2020; }
@@ -262,6 +263,15 @@ function stepActionLabel(action) {
     clipboard_take_and_deploy: 'Install from clipboard' }[(action || {}).command] || 'Run';
 }
 
+function safeHttpUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    return ['https:', 'http:'].includes(parsed.protocol) ? parsed.href : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // Mike's on-Mac / off-Mac + comment-thread UI state that must survive a
 // loadCards() full re-render (realtime pulses on unrelated cards would
 // otherwise silently collapse an open comment thread mid-conversation).
@@ -270,6 +280,7 @@ const uiState = {
   openComments: new Set(),   // card ids with the comment thread expanded
   pendingComment: new Map(), // card id -> ISO timestamp of Mike's last un-replied comment
 };
+let cardsChannel = null;
 
 // The board is Mike's alone, and he has two identities that can reach it:
 // the magic-link address and the personal Gmail that Google hands back on
@@ -370,9 +381,15 @@ function stepsAccordion(rawSteps, stepState, stepActions) {
     const checked = !!stepState[i];
     const action = stepAction(stepActions, i);
     const verifiedDone = checked && action && action.command !== 'open_url';
-    const btn = action
-      ? `<button class="step-action-btn${verifiedDone ? ' state-done' : ''}" data-step-action-idx="${i}" ${verifiedDone ? 'disabled' : ''}>${verifiedDone ? 'Done' : esc(stepActionLabel(action))}</button>`
-      : '';
+    let btn = '';
+    if (action && action.command === 'open_url') {
+      const href = safeHttpUrl((action.payload || {}).url);
+      btn = href
+        ? `<a class="step-action-btn" href="${esc(href)}" target="_blank" rel="noopener">${esc(stepActionLabel(action))}</a>`
+        : `<button class="step-action-btn state-failed" disabled>Invalid link</button>`;
+    } else if (action) {
+      btn = `<button class="step-action-btn${verifiedDone ? ' state-done' : ''}" data-step-action-idx="${i}" ${verifiedDone ? 'disabled' : ''}>${verifiedDone ? 'Done' : esc(stepActionLabel(action))}</button>`;
+    }
     return `
     <li class="step-item${checked ? ' checked' : ''}" data-step-idx="${i}">
       <label><input type="checkbox" class="step-check" ${checked ? 'checked' : ''} /><span>${esc(s)}</span></label>
@@ -418,29 +435,6 @@ async function runStepAction(cardId, stepIdx, action, btn) {
   const li = btn.closest('.step-item');
   let note = li.querySelector('.step-action-note');
   if (!note) { note = document.createElement('div'); note.className = 'step-action-note'; li.appendChild(note); }
-  if (action.command === 'open_url') {
-    const rawUrl = (action.payload || {}).url;
-    try {
-      const parsed = new URL(rawUrl);
-      if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('unsupported protocol');
-      window.open(parsed.href, '_blank', 'noopener');
-      btn.textContent = 'Opened';
-      btn.classList.add('state-done');
-      note.textContent = action.success_message || 'Opened in a new tab.';
-      const cb = li.querySelector('.step-check');
-      if (cb && !cb.checked) {
-        cb.checked = true;
-        li.classList.add('checked');
-        await persistStepState(cardId, stepIdx, true);
-      }
-    } catch (_) {
-      btn.disabled = false;
-      btn.textContent = stepActionLabel(action);
-      btn.classList.add('state-failed');
-      note.textContent = 'This action has an invalid link. Ask Pulse to repair the card.';
-    }
-    return;
-  }
   btn.textContent = 'Sending…';
   const payload = { ...(action.payload || {}) };
   if (action.command === 'open_session') {
@@ -968,10 +962,19 @@ async function renderApp(session) {
     <header><h1>Pulse Zero</h1><span class="count" id="count"></span></header>
     <main id="cards"><div class="empty">Loading...</div></main>`;
   await loadCards();
-  sb.channel('pulse_cards_live')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'pulse_cards' }, () => loadCards())
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'pulse_card_comments' }, () => loadCards())
-    .subscribe();
+  if (!cardsChannel) {
+    cardsChannel = sb.channel('pulse_cards_live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pulse_cards' }, () => loadCards())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pulse_card_comments' }, () => loadCards())
+      .subscribe();
+  }
+}
+
+function stopCardsRealtime() {
+  if (!cardsChannel) return;
+  const oldChannel = cardsChannel;
+  cardsChannel = null;
+  sb.removeChannel(oldChannel);
 }
 
 // A session that isn't Mike's is treated as no session for everything
@@ -979,9 +982,9 @@ async function renderApp(session) {
 // can't hold an authenticated-looking shell.
 function route(session) {
   setPulseSession(isOwner(session) ? session : null);
-  if (!session) renderLogin();
+  if (!session) { stopCardsRealtime(); renderLogin(); }
   else if (isOwner(session)) renderApp(session);
-  else renderWrongAccount(session);
+  else { stopCardsRealtime(); renderWrongAccount(session); }
 }
 
 async function boot() {

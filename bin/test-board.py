@@ -295,6 +295,15 @@ def main():
         ok("admin-generated magic-link token", f"hashed_token len={len(token_hash)}")
 
         tab = CDPTab()
+        tab.send("Page.addScriptToEvaluateOnNewDocument", {"source": """
+            window.__pulseSmokeErrors = [];
+            window.addEventListener('error', event => {
+                window.__pulseSmokeErrors.push(String(event.error || event.message || 'error'));
+            });
+            window.addEventListener('unhandledrejection', event => {
+                window.__pulseSmokeErrors.push(String(event.reason || 'unhandled rejection'));
+            });
+        """})
         tab.navigate(BOARD_URL, wait_ms=2500)
         logged_in = tab.eval(
             f"""(async () => {{
@@ -320,13 +329,26 @@ def main():
         else:
             fail("open card remains visible with 101 terminal rows", "active card was crowded out")
 
-        step_action_present = tab.eval(
-            f"[...document.querySelectorAll('.step-action-btn')].some(b => b.textContent.trim() === {json.dumps(step_action_label)})"
+        step_action_state = tab.eval(
+            f"""(() => {{
+                const action = [...document.querySelectorAll('.step-action-btn')]
+                    .find(b => b.textContent.trim() === {json.dumps(step_action_label)});
+                return action && {{
+                    tag: action.tagName,
+                    href: action.href,
+                    target: action.target,
+                    rel: action.rel,
+                }};
+            }})()"""
         )
-        if step_action_present:
-            ok("custom step-action label renders")
+        if (step_action_state and
+                step_action_state["tag"] == "A" and
+                step_action_state["href"] == "https://example.test/current" and
+                step_action_state["target"] == "_blank" and
+                "noopener" in step_action_state["rel"]):
+            ok("open_url renders as a native safe link", str(step_action_state))
         else:
-            fail("custom step-action label renders", step_action_label)
+            fail("open_url renders as a native safe link", str(step_action_state))
 
         secret_guard = tab.eval("""({
             gemini: looksLikeSecret('AIza' + 'A'.repeat(35)),
@@ -373,6 +395,14 @@ def main():
             ok("authenticated signed-session broker returns a WebSocket URL")
         else:
             fail("authenticated signed-session broker returns a WebSocket URL", str(pulse_controls))
+
+        realtime_errors = tab.eval(
+            "window.__pulseSmokeErrors.filter(e => e.includes('cannot add `postgres_changes` callbacks'))"
+        )
+        if not realtime_errors:
+            ok("realtime subscription initializes once without callback errors")
+        else:
+            fail("realtime subscription initializes once without callback errors", str(realtime_errors))
 
         # done card hidden by default, revealed by disclosure
         hidden_before = tab.eval(f"!document.getElementById('cards').innerText.includes({json.dumps(done_title)})")

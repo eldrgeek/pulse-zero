@@ -66,7 +66,8 @@ bin/pulse-push action --title "Renew the TLS cert" --url "https://dash.example.c
 Optional `--step-actions` turns individual checklist rows into operations.
 The JSON array is index-aligned with `--steps`; each entry is `null` or an
 object with `command`, `payload`, and optional `label` / `success_message`.
-`open_url` is handled in the browser. `open_session`, `clipboard_set`, and
+`open_url` renders as a native `<a target="_blank" rel="noopener">` link so
+browser popup policy cannot silently swallow it. `open_session`, `clipboard_set`, and
 `clipboard_take_and_deploy` go through the authenticated Mac bridge. When a
 deduped card's step text changes, `pulse-push` clears its index-aligned
 `step_state` so stale checkmarks cannot mark new work complete. A step-level
@@ -144,6 +145,11 @@ actual outcome (`Open Gemini API Keys`, `Install & verify`) rather than the
 transport. Credential cards must say that secrets stay on the Mac clipboard
 and must never be pasted into Pulse chat. Verified non-link actions render
 as disabled **Done** buttons after refresh; link actions remain reusable.
+
+`renderApp()` may run more than once during Supabase's initial auth event.
+The realtime channel is therefore created once and explicitly removed on
+sign-out/wrong-account routing; reusing an already-subscribed channel and
+adding callbacks again throws in current supabase-js.
 
 Every card (including answered/bounced/done ones) has a task-scoped **Pulse
 thread** at the bottom — see "Comments" above. Open action cards also show an

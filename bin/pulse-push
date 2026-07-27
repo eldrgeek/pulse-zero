@@ -149,6 +149,15 @@ def parse_step_actions(raw, steps):
         if not isinstance(action.get("payload", {}), dict):
             sys.stderr.write(f"error: --step-actions[{idx}].payload must be an object\n")
             sys.exit(1)
+        if command == "open_url":
+            url = action.get("payload", {}).get("url")
+            parsed = urllib.parse.urlparse(url or "")
+            if parsed.scheme not in ("https", "http") or not parsed.netloc:
+                sys.stderr.write(
+                    f"error: --step-actions[{idx}] open_url requires an "
+                    "absolute http(s) payload.url\n"
+                )
+                sys.exit(1)
         for text_field in ("label", "success_message"):
             if text_field in action and not isinstance(action[text_field], str):
                 sys.stderr.write(
