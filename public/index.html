@@ -58,7 +58,8 @@
   .step-item label { flex: 1 1 auto; min-width: 0; }
   .step-action-btn {
     flex-shrink: 0; font-size: 12.5px; font-weight: 650; padding: 7px 12px; border-radius: 8px;
-    background: #1d3a6e; color: #a8c8ff; border: 1px solid #2f5fc4; margin-left: 26px;
+    min-height: 44px; background: #1d3a6e; color: #a8c8ff;
+    border: 1px solid #2f5fc4; margin-left: 26px;
   }
   .step-action-btn:disabled { opacity: 0.6; cursor: default; }
   .step-action-btn.state-failed { background: #3a1414; color: #ff9a9a; border-color: #5a2020; }
@@ -368,8 +369,9 @@ function stepsAccordion(rawSteps, stepState, stepActions) {
   const list = items.map((s, i) => {
     const checked = !!stepState[i];
     const action = stepAction(stepActions, i);
+    const verifiedDone = checked && action && action.command !== 'open_url';
     const btn = action
-      ? `<button class="step-action-btn" data-step-action-idx="${i}">${esc(stepActionLabel(action))}</button>`
+      ? `<button class="step-action-btn${verifiedDone ? ' state-done' : ''}" data-step-action-idx="${i}" ${verifiedDone ? 'disabled' : ''}>${verifiedDone ? 'Done' : esc(stepActionLabel(action))}</button>`
       : '';
     return `
     <li class="step-item${checked ? ' checked' : ''}" data-step-idx="${i}">
@@ -377,9 +379,10 @@ function stepsAccordion(rawSteps, stepState, stepActions) {
       ${btn}
     </li>`;
   }).join('');
+  const hasActions = !!(stepActions || []).find(Boolean);
   return `
     <div class="steps-accordion">
-      <button class="steps-toggle" data-action="toggle-steps">Steps (${items.length})</button>
+      <button class="steps-toggle" data-action="toggle-steps" aria-expanded="false">${hasActions ? 'Steps & actions' : 'Steps'} (${items.length})</button>
       <div class="steps-body" style="display:none;">
         <ul class="steps-list">${list}</ul>
       </div>
@@ -411,6 +414,7 @@ function afkAwareMessage(result) {
 
 async function runStepAction(cardId, stepIdx, action, btn) {
   btn.disabled = true;
+  btn.classList.remove('state-failed');
   const li = btn.closest('.step-item');
   let note = li.querySelector('.step-action-note');
   if (!note) { note = document.createElement('div'); note.className = 'step-action-note'; li.appendChild(note); }
@@ -489,10 +493,14 @@ function wireSteps(div, c) {
   const toggle = div.querySelector('[data-action="toggle-steps"]');
   const body = div.querySelector('.steps-body');
   if (toggle && body) {
-    if (uiState.openSteps.has(c.id)) body.style.display = 'block';
+    if (uiState.openSteps.has(c.id)) {
+      body.style.display = 'block';
+      toggle.setAttribute('aria-expanded', 'true');
+    }
     toggle.onclick = () => {
       const open = body.style.display !== 'none';
       body.style.display = open ? 'none' : 'block';
+      toggle.setAttribute('aria-expanded', String(!open));
       if (open) uiState.openSteps.delete(c.id); else uiState.openSteps.add(c.id);
     };
   }

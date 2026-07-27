@@ -69,7 +69,8 @@ object with `command`, `payload`, and optional `label` / `success_message`.
 `open_url` is handled in the browser. `open_session`, `clipboard_set`, and
 `clipboard_take_and_deploy` go through the authenticated Mac bridge. When a
 deduped card's step text changes, `pulse-push` clears its index-aligned
-`step_state` so stale checkmarks cannot mark new work complete.
+`step_state` so stale checkmarks cannot mark new work complete. A step-level
+`open_url` also satisfies the board's deep-link requirement.
 
 Board contract enforcement: `--title` is required, imperative, and rejected (exit 1) over 60 chars. `--url` is not required but you'll get a warning without one.
 
@@ -139,7 +140,8 @@ Action cards render as one line (title) + a button row:
 Checklist rows may also carry a compact action button. Labels describe the
 actual outcome (`Open Gemini API Keys`, `Install & verify`) rather than the
 transport. Credential cards must say that secrets stay on the Mac clipboard
-and must never be pasted into Pulse chat.
+and must never be pasted into Pulse chat. Verified non-link actions render
+as disabled **Done** buttons after refresh; link actions remain reusable.
 
 Every card (including answered/bounced/done ones) has a task-scoped **Pulse
 thread** at the bottom — see "Comments" above. Open action cards also show an

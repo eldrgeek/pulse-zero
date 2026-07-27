@@ -113,10 +113,6 @@ def push(args, key, url):
     ctype = args.type
     if ctype == "action":
         validate_action_title(args.title)
-        if not args.url:
-            sys.stderr.write(
-                "warn: --url not set. Action cards without a deep link make Mike guess where to go.\n"
-            )
         payload = {"title": args.title, "why": args.why or "", "steps": args.steps, "url": args.url}
         step_actions_raw = getattr(args, "step_actions", None)
         if step_actions_raw:
@@ -125,6 +121,15 @@ def push(args, key, url):
             except json.JSONDecodeError as e:
                 sys.stderr.write(f"error: --step-actions is not valid JSON: {e}\n")
                 sys.exit(1)
+        has_step_link = any(
+            action and action.get("command") == "open_url"
+            for action in payload.get("step_actions", [])
+            if isinstance(action, dict)
+        )
+        if not args.url and not has_step_link:
+            sys.stderr.write(
+                "warn: --url not set. Action cards without a deep link make Mike guess where to go.\n"
+            )
     elif ctype == "verdict":
         payload = {"artifact_name": args.artifact, "url": args.url, "summary": args.summary}
     elif ctype == "decision":
