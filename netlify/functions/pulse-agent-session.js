@@ -1,12 +1,15 @@
 // Authenticated ElevenLabs session broker for Pulse.
 //
 // The browser sends its existing Supabase access token. We verify that token
-// with Supabase and require Mike's exact allowlisted email before using the
+// with Supabase and require an allowlisted Mike identity before using the
 // server-only ElevenLabs API key to mint a short-lived signed WebSocket URL.
 const SUPABASE_URL = 'https://omfwcodoimjmbrhssvfl.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_vi2qDWjozUJ5mi9dwirkLA_rj6UaqLf';
 const AGENT_ID = 'agent_9901kxk0yphafwrvpes82h4me49n';
-const ALLOWED_EMAIL = 'mw@mike-wolf.com';
+// Both of Mike's identities: the magic-link address and the Google account
+// "Continue with Google" returns. Mirror of public.is_pulse_owner() in
+// supabase/migrations/20260727_google_signin_owner_emails.sql.
+const ALLOWED_EMAILS = ['mw@mike-wolf.com', 'mw.personalmail@gmail.com'];
 
 const headers = {
   'Content-Type': 'application/json',
@@ -43,7 +46,7 @@ exports.handler = async (event) => {
       return response(401, { error: 'Your Pulse session has expired.' });
     }
     const user = await userResponse.json();
-    if ((user.email || '').toLowerCase() !== ALLOWED_EMAIL) {
+    if (!ALLOWED_EMAILS.includes((user.email || '').toLowerCase())) {
       return response(403, { error: 'This Pulse is private.' });
     }
 

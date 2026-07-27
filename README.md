@@ -2,7 +2,22 @@
 
 The "needs-Mike action board." Four card types only: **ACTION**, **VERDICT**, **DECISION**, **BRIEF**. No wellness, digests, media, chat, alarms, or reader capture — see `../SOMA/pulse/STRIPPED-2026-07-15.md` for what got cut and why.
 
-Static single-page app (`public/index.html`) + shared SOMA Auth Supabase project (`omfwcodoimjmbrhssvfl`), table `public.pulse_cards`. Magic-link login, allowlisted to `mw@mike-wolf.com`.
+Static single-page app (`public/index.html`) + shared SOMA Auth Supabase project (`omfwcodoimjmbrhssvfl`), table `public.pulse_cards`.
+
+## Sign-in (2026-07-27)
+
+**"Continue with Google" is the primary path**; magic link is still there as the fallback. One click, no email round trip, and the Supabase session persists and auto-refreshes — so on a browser Mike already uses this should be a once-ever click.
+
+The gate is a single function, `public.is_pulse_owner()`, listing **both** of Mike's identities:
+
+- `mw@mike-wolf.com` — the magic-link address
+- `mw.personalmail@gmail.com` — the account Google actually hands back (Google under-serves his legacy Workspace account, so the personal Gmail is the one he stays signed into)
+
+Every RLS policy on `pulse_cards`, `pulse_card_comments`, and `pulse_zero_feedback` calls that function, and `netlify/functions/pulse-agent-session.js` mirrors the list. **To add or change an owner identity, edit the function — not six policies.**
+
+Google here is the **redirect flow through Supabase's own `/auth/v1/callback`**, using the shared SOMA Auth Google client (`595993744223-…`). That client needs **no** per-origin registration, so nothing in the Google console is required — only that the origin sits in the Supabase `uri_allow_list`, which `pulse-zero.netlify.app` already does. (Don't confuse this with the soma-feedback chip's GIS One Tap client `1072944905499-…`, which *does* need Authorized JavaScript origins — that's why the chip on this page carries `data-no-google`.)
+
+Signing in with an account that isn't on the list now renders an explicit "signed in as X, which isn't on this board" screen with a sign-out button. Before, RLS returned zero rows and the board rendered silently empty, which read as "Pulse is broken."
 
 ## Board standard (v2, 2026-07-26)
 

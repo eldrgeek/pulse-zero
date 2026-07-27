@@ -140,6 +140,16 @@
     .login-box input { background: #fff; color: #14171a; border-color: #cfd3d8; }
   }
   .login-box button { width: 100%; background: #2f6fed; color: white; padding: 12px; }
+  .login-box .google-btn {
+    background: #fff; color: #14171a; border: 1px solid #cfd3d8; font-weight: 600;
+    display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 18px;
+  }
+  .login-box .google-btn svg { width: 18px; height: 18px; }
+  .login-sep { display: flex; align-items: center; gap: 10px; margin: 18px 0 4px; color: #8b9198; font-size: 13px; }
+  .login-sep::before, .login-sep::after { content: ''; flex: 1; height: 1px; background: #35383d; }
+  @media (prefers-color-scheme: light) { .login-sep::before, .login-sep::after { background: #cfd3d8; } }
+  .login-box .btn-magic { background: transparent; color: #8b9198; border: 1px solid #35383d; font-size: 14px; }
+  @media (prefers-color-scheme: light) { .login-box .btn-magic { border-color: #cfd3d8; } }
   .muted { opacity: 0.55; font-size: 13px; }
   /* soma-feedback chip (§8) sits bottom-left by default; nudge it above the
      persistent #talk-bar so the two don't overlap. */
@@ -256,15 +266,57 @@ const uiState = {
   pendingComment: new Map(), // card id -> ISO timestamp of Mike's last un-replied comment
 };
 
+// The board is Mike's alone, and he has two identities that can reach it:
+// the magic-link address and the personal Gmail that Google hands back on
+// "Continue with Google" (Google gives his legacy Workspace account worse
+// service, so the personal account is the one he actually stays signed into).
+// Must stay in sync with public.is_pulse_owner() in the migrations — the DB is
+// the real gate; this list only decides what the UI says.
+const OWNER_EMAILS = ['mw@mike-wolf.com', 'mw.personalmail@gmail.com'];
+const sessionEmail = (session) => (session?.user?.email || '').toLowerCase();
+const isOwner = (session) => OWNER_EMAILS.includes(sessionEmail(session));
+
+const GOOGLE_MARK = `<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#4285F4" d="M45.1 24.5c0-1.6-.1-2.8-.4-4H24v7.3h12.1c-.2 2-1.6 5-4.5 7l6.9 5.4c4.1-3.8 6.6-9.4 6.6-15.7z"/><path fill="#34A853" d="M24 46c5.9 0 10.9-2 14.5-5.3l-6.9-5.4c-1.9 1.3-4.4 2.2-7.6 2.2-5.8 0-10.7-3.8-12.5-9.1l-7.1 5.5C8.1 41.1 15.4 46 24 46z"/><path fill="#FBBC05" d="M11.5 28.4c-.5-1.4-.7-2.9-.7-4.4s.3-3 .7-4.4l-7.1-5.5C2.9 17 2 20.4 2 24s.9 7 2.4 9.9l7.1-5.5z"/><path fill="#EA4335" d="M24 10.2c4.1 0 6.9 1.8 8.5 3.3l6.2-6C34.9 4 29.9 2 24 2 15.4 2 8.1 6.9 4.4 14.1l7.1 5.5C13.3 14.3 18.2 10.2 24 10.2z"/></svg>`;
+
+// Signed in, but as somebody who isn't Mike. Before this, a stray Google
+// account rendered a silent empty board (RLS returns zero rows, not an error),
+// which reads as "Pulse is broken" rather than "wrong account".
+function renderWrongAccount(session) {
+  app.innerHTML = `
+    <div class="login"><div class="login-box">
+      <h1 style="margin-bottom:4px;">Pulse Zero</h1>
+      <p class="muted">Signed in as <strong>${esc(session.user.email || 'unknown')}</strong>, which isn't on this board.</p>
+      <button id="signout" class="btn-magic" style="margin-top:18px;">Sign out and try another account</button>
+    </div></div>`;
+  document.getElementById('signout').onclick = () => sb.auth.signOut();
+}
+
 async function renderLogin() {
   app.innerHTML = `
     <div class="login"><div class="login-box">
       <h1 style="margin-bottom:4px;">Pulse Zero</h1>
-      <p class="muted">Manage-Mike core. Magic link only.</p>
+      <p class="muted">Manage-Mike core.</p>
+      <button id="google" class="google-btn">${GOOGLE_MARK}Continue with Google</button>
+      <div class="login-sep">or</div>
       <input id="email" type="email" placeholder="mw@mike-wolf.com" autocomplete="email" />
-      <button id="send">Send magic link</button>
+      <button id="send" class="btn-magic">Send magic link</button>
       <p class="muted" id="status" style="margin-top:12px;"></p>
     </div></div>`;
+  document.getElementById('google').onclick = async () => {
+    const status = document.getElementById('status');
+    status.textContent = 'Opening Google...';
+    // Redirect flow, not One Tap: it uses the shared SOMA Auth Google client via
+    // Supabase's own /auth/v1/callback, so this origin needs no entry in the
+    // Google console — only the Supabase URI allow list, where pulse-zero
+    // already sits. If Chrome has exactly one Google session, this is one click
+    // and a bounce; the Supabase session then persists and auto-refreshes, so
+    // it should not recur on this browser.
+    const { error } = await sb.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: location.origin },
+    });
+    if (error) status.textContent = 'Error: ' + error.message;
+  };
   document.getElementById('send').onclick = async () => {
     const email = document.getElementById('email').value.trim();
     const status = document.getElementById('status');
@@ -874,14 +926,20 @@ async function renderApp(session) {
     .subscribe();
 }
 
+// A session that isn't Mike's is treated as no session for everything
+// privileged (voice broker, realtime subscribe), so a wrong Google account
+// can't hold an authenticated-looking shell.
+function route(session) {
+  setPulseSession(isOwner(session) ? session : null);
+  if (!session) renderLogin();
+  else if (isOwner(session)) renderApp(session);
+  else renderWrongAccount(session);
+}
+
 async function boot() {
   const { data: { session } } = await sb.auth.getSession();
-  setPulseSession(session);
-  if (session) { renderApp(session); } else { renderLogin(); }
-  sb.auth.onAuthStateChange((event, session) => {
-    setPulseSession(session);
-    if (session) renderApp(session); else renderLogin();
-  });
+  route(session);
+  sb.auth.onAuthStateChange((event, session) => route(session));
 }
 boot();
 </script>
