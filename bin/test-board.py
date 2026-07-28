@@ -22,6 +22,8 @@ What it does:
   3. Asserts:
      - no duplicate OPEN action cards with the same title+source
      - a --key push replaces the existing OPEN card in place (same id)
+     - a typed action button queues exactly one durable Mac command, receives
+       a verified executor receipt, and auto-resolves its card
      - 101 terminal rows cannot crowd an OPEN card out of the board query
      - a resolved ("done") card is NOT visible on load, but appears once the
        "Recently done" disclosure is opened
@@ -175,6 +177,7 @@ def main():
         return 1
 
     created_ids = []
+    typed_command_id = None
 
     print(f"\n=== Pulse Zero board smoke test (nonce={NONCE}) ===\n")
     print("Pushing test cards via bin/pulse-push ...")
@@ -225,6 +228,52 @@ def main():
     subprocess.run([PULSE_PUSH, "decision", "--question", decision_q, "--options", "A,B,Other",
                     "--source", TEST_SOURCE], capture_output=True, text=True,
                    env={**os.environ, "PULSE_ZERO_SERVICE_KEY": key})
+
+    typed_title = f"Smoke typed action {NONCE}"
+    typed_label = f"Verify bridge {NONCE}"
+    typed_action_id = f"gdoc-auth-{NONCE}"
+    typed_actions = [{
+        "id": typed_action_id,
+        "revision": 1,
+        "executor": "workflow",
+        "label": typed_label,
+        "description": "Exercise the deployed typed-action path with a read-only Drive verification.",
+        "operation": "gdoc_bridge_authorize",
+        "params": {
+            "project_id": "gdoc-bridge-mw",
+            "account": MIKE_EMAIL,
+        },
+        "human_gate": {
+            "instruction": "Click the highlighted Continue or Allow button.",
+            "target": {
+                "url": "https://accounts.google.com/o/oauth2/v2/auth",
+                "ref": "google.oauth.consent.primary",
+                "label": "Continue or Allow",
+            },
+        },
+        "completion": {
+            "mode": "verified",
+            "success_message": "Typed-action smoke verification passed.",
+            "close_card": True,
+        },
+        "verification": {
+            "kind": "google_drive_about",
+            "params": {},
+        },
+    }]
+    typed_push = subprocess.run([
+        PULSE_PUSH, "action",
+        "--title", typed_title,
+        "--why", "Production smoke test of the complete typed-action transport.",
+        "--steps", "Clicking the action must produce a verified receipt and close this card.",
+        "--actions", json.dumps(typed_actions),
+        "--source", TEST_SOURCE,
+        "--key", f"smoke-typed-{NONCE}",
+    ], capture_output=True, text=True, env={**os.environ, "PULSE_ZERO_SERVICE_KEY": key})
+    if typed_push.returncode == 0:
+        ok("typed action fixture accepted by pulse-push")
+    else:
+        fail("typed action fixture accepted by pulse-push", typed_push.stderr.strip())
 
     done_title = f"Smoke done card {NONCE}"
     d1 = subprocess.run([PULSE_PUSH, "action", "--title", done_title, "--url", "https://example.test",
@@ -322,13 +371,95 @@ def main():
         active_survived = wait_for(
             tab,
             f"document.body.innerText.includes({json.dumps(dup_title)})",
-            timeout_s=8,
+            timeout_s=20,
         )
         if active_survived:
             ok("open card remains visible with 101 terminal rows")
         else:
-            fail("open card remains visible with 101 terminal rows", "active card was crowded out")
+            board_state = tab.eval("""({
+                cards: document.getElementById('cards')?.innerText || '',
+                count: document.getElementById('count')?.innerText || '',
+                errors: window.__pulseSmokeErrors || [],
+            })""")
+            fail("open card remains visible with 101 terminal rows", str(board_state))
 
+        wait_for(
+            tab,
+            f"""[...document.querySelectorAll('button[data-typed-action]')]
+                .some(candidate => candidate.textContent.trim() === {json.dumps(typed_label)})""",
+            timeout_s=20,
+        )
+        typed_button_state = tab.eval(
+            f"""(() => {{
+                const button = [...document.querySelectorAll('button[data-typed-action]')]
+                    .find(candidate => candidate.textContent.trim() === {json.dumps(typed_label)});
+                if (!button) return null;
+                const card = button.closest('.card');
+                const state = {{
+                    tag: button.tagName,
+                    disabled: button.disabled,
+                    actionId: button.dataset.typedAction,
+                    cardText: card && card.innerText,
+                }};
+                if (!button.disabled) button.click();
+                return state;
+            }})()"""
+        )
+        if (typed_button_state and
+                typed_button_state["tag"] == "BUTTON" and
+                not typed_button_state["disabled"] and
+                typed_button_state["actionId"] == typed_action_id):
+            ok("typed action renders as an enabled clickable button")
+        else:
+            fail("typed action renders as an enabled clickable button", str(typed_button_state))
+
+        typed_card_rows = [r for r in rows if (r.get("payload") or {}).get("title") == typed_title]
+        typed_card_id = typed_card_rows[0]["id"] if typed_card_rows else None
+        typed_run = None
+        if typed_card_id and typed_button_state:
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                runs = sb_rest("GET", "mac_commands", key, params={
+                    "pulse_card_id": f"eq.{typed_card_id}",
+                    "pulse_action_id": f"eq.{typed_action_id}",
+                    "order": "attempt.desc",
+                    "limit": "1",
+                })
+                if runs:
+                    typed_run = runs[0]
+                    typed_command_id = typed_run["id"]
+                    if typed_run.get("status") in ("done", "failed"):
+                        break
+                time.sleep(0.5)
+        if (typed_run and typed_run.get("status") == "done" and
+                (typed_run.get("result") or {}).get("verified") is True and
+                (typed_run.get("result") or {}).get("state") == "done"):
+            ok("typed action receives a verified executor receipt")
+        else:
+            fail("typed action receives a verified executor receipt", str(typed_run))
+
+        resolved_typed = []
+        if typed_card_id:
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                resolved_typed = sb_rest("GET", "pulse_cards", key, params={
+                    "id": f"eq.{typed_card_id}",
+                    "select": "id,status,resolved_note",
+                })
+                if resolved_typed and resolved_typed[0].get("status") == "resolved":
+                    break
+                time.sleep(0.5)
+        if resolved_typed and resolved_typed[0].get("status") == "resolved":
+            ok("verified typed action auto-resolves its card")
+        else:
+            fail("verified typed action auto-resolves its card", str(resolved_typed))
+
+        wait_for(
+            tab,
+            f"""[...document.querySelectorAll('.step-action-btn')]
+                .some(button => button.textContent.trim() === {json.dumps(step_action_label)})""",
+            timeout_s=10,
+        )
         step_action_state = tab.eval(
             f"""(() => {{
                 const action = [...document.querySelectorAll('.step-action-btn')]
@@ -362,17 +493,19 @@ def main():
 
         pulse_controls = tab.eval("""(async () => {
             const bar = document.getElementById('talk-bar');
-            const ask = [...document.querySelectorAll('button')]
-                .find(b => b.textContent.trim() === 'Ask Pulse');
-            const askCard = ask && ask.closest('.card');
-            if (ask) ask.click();
-            const input = askCard && askCard.querySelector('.comment-input');
             const { data: { session } } = await sb.auth.getSession();
             const signed = await fetch('/.netlify/functions/pulse-agent-session', {
                 headers: { Authorization: `Bearer ${session.access_token}` },
                 cache: 'no-store',
             });
             const signedBody = await signed.json().catch(() => ({}));
+            // Resolve the action-receipt fetch first; a realtime render during
+            // that await must not be mistaken for broken synchronous focus.
+            const ask = [...document.querySelectorAll('button')]
+                .find(b => b.textContent.trim() === 'Ask Pulse');
+            const askCard = ask && ask.closest('.card');
+            if (ask) ask.click();
+            const input = askCard && askCard.querySelector('.comment-input');
             return {
                 barVisible: !!bar && !bar.hidden,
                 askPresent: !!ask,
@@ -411,6 +544,12 @@ def main():
         else:
             fail("done card NOT visible before expanding 'Recently done'", "title text found in main#cards before expand")
 
+        wait_for(
+            tab,
+            """[...document.querySelectorAll('details.bounced-section')]
+                .some(x => x.querySelector('summary')?.textContent.includes('Recently done'))""",
+            timeout_s=10,
+        )
         opened = tab.eval("""(() => {
             const d = [...document.querySelectorAll('details.bounced-section')]
                 .find(x => x.querySelector('summary') && x.querySelector('summary').textContent.includes('Recently done'));
@@ -482,6 +621,8 @@ def main():
         # ── Cleanup: delete every row this run created ──────────────────
         print("\nCleaning up test cards ...")
         try:
+            if typed_command_id is not None:
+                sb_rest("DELETE", "mac_commands", key, params={"id": f"eq.{typed_command_id}"})
             sb_rest("DELETE", "pulse_cards", key, params={"app_id": f"eq.{APP_ID}", "created_by": f"eq.{TEST_SOURCE}"})
             remaining = sb_rest("GET", "pulse_cards", key, params={"app_id": f"eq.{APP_ID}", "created_by": f"eq.{TEST_SOURCE}"})
             if not remaining:

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>Pulse Zero</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/pulse-actions.js"></script>
 <link rel="stylesheet" href="/vendor/soma-feedback/soma-feedback.css">
 <style>
   :root { color-scheme: light dark; }
@@ -66,6 +67,34 @@
   .step-action-btn.state-failed { background: #3a1414; color: #ff9a9a; border-color: #5a2020; }
   .step-action-btn.state-done { background: #12302e; color: #4ecdc4; border-color: #1c4a46; }
   .step-action-note { flex-basis: 100%; margin: 4px 0 0 26px; font-size: 12px; opacity: 0.75; }
+  .card-actions { margin: 10px 0; display: grid; gap: 8px; }
+  .card-actions-title { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.58; }
+  .card-action-row {
+    padding: 10px; border: 1px solid #2a2d31; border-radius: 10px;
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center;
+  }
+  @media (prefers-color-scheme: light) { .card-action-row { border-color: #dfe2e6; } }
+  .card-action-copy { min-width: 0; }
+  .card-action-label { font-size: 13.5px; font-weight: 650; line-height: 1.35; }
+  .card-action-description { font-size: 12.5px; line-height: 1.4; opacity: 0.68; margin-top: 2px; }
+  .card-action-note { grid-column: 1 / -1; font-size: 12px; line-height: 1.4; opacity: 0.78; }
+  .card-action-note.waiting-human { color: #e8b545; opacity: 1; }
+  .card-action-note.failed { color: #ff9a9a; opacity: 1; }
+  .card-action-note.verified { color: #4ecdc4; opacity: 1; }
+  .card-action-btn {
+    min-height: 44px; padding: 8px 12px; font-size: 12.5px;
+    background: #1d3a6e; color: #a8c8ff; border: 1px solid #2f5fc4;
+  }
+  @media (max-width: 420px) {
+    .card-action-row { grid-template-columns: 1fr; }
+    .card-action-btn { width: 100%; }
+  }
+  .card-action-btn.state-failed { background: #3a1414; color: #ff9a9a; border-color: #5a2020; }
+  .card-action-btn.state-done { background: #12302e; color: #4ecdc4; border-color: #1c4a46; }
+  .card-action-contract-error {
+    margin: 8px 0; padding: 9px 10px; border-radius: 9px; font-size: 12.5px;
+    background: #3a1414; color: #ffb0b0; border: 1px solid #5a2020;
+  }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
   button {
     font: inherit; font-size: 14px; font-weight: 600; padding: 10px 16px; border-radius: 10px;
@@ -279,8 +308,13 @@ const uiState = {
   openSteps: new Set(),      // card ids with the steps accordion expanded
   openComments: new Set(),   // card ids with the comment thread expanded
   pendingComment: new Map(), // card id -> ISO timestamp of Mike's last un-replied comment
+  actionRuns: new Map(),     // cardId:actionId:revision -> latest durable mac_commands run
+  actionRunError: null,      // schema/RLS error shown on typed-action cards
+  actionPollers: new Set(),  // command ids currently being polled across re-renders
+  resolvingCards: new Set(), // typed cards currently being auto-resolved
 };
 let cardsChannel = null;
+let routedIdentity = null;
 
 // The board is Mike's alone, and he has two identities that can reach it:
 // the magic-link address and the personal Gmail that Google hands back on
@@ -512,6 +546,229 @@ function wireSteps(div, c) {
     if (!action) return;
     btn.onclick = () => runStepAction(c.id, idx, action, btn);
   });
+}
+
+// ── Typed card actions (payload.actions v1) ────────────────────────
+// Every Mike-requested operation is a typed action with a stable id/revision.
+// The browser never executes it directly: it creates one durable
+// execute_card_action row in mac_commands. workflow/web routes are handed to
+// Yeshie by the Mac broker; mac routes are handed to Mac automation. The row
+// is both transport and receipt, so reloads resume the same attempt.
+function typedActions(c) {
+  return PulseActions.parsePayload((c && c.payload) || {});
+}
+
+function typedActionRun(c, action) {
+  return uiState.actionRuns.get(PulseActions.actionRunKey(c.id, action)) || null;
+}
+
+function actionButtonText(phase, action) {
+  return {
+    idle: action.label,
+    queued: 'Queued…',
+    running: 'Working…',
+    waiting_human: 'Waiting on Mac…',
+    verified: 'Done',
+  }[phase] || 'Retry';
+}
+
+function cardActionsPanel(c) {
+  const parsed = typedActions(c);
+  if (parsed.errors.length) {
+    return `<div class="card-action-contract-error">This card’s action contract is invalid: ${esc(parsed.errors.join('; '))}</div>`;
+  }
+  if (!parsed.actions.length) return '';
+  const rows = parsed.actions.map(action => {
+    const run = typedActionRun(c, action);
+    const phase = PulseActions.runPhase(run);
+    const note = PulseActions.safeResultMessage(run, action);
+    const disabled = c.status !== 'open' || !!uiState.actionRunError ||
+      ['queued', 'running', 'waiting_human', 'verified'].includes(phase);
+    const stateClass = phase === 'verified' ? ' state-done' : phase === 'failed' ? ' state-failed' : '';
+    return `
+      <div class="card-action-row" data-card-id="${esc(c.id)}" data-action-id="${esc(action.id)}" data-action-revision="${action.revision}">
+        <div class="card-action-copy">
+          <div class="card-action-label">${esc(action.label)}</div>
+          ${action.description ? `<div class="card-action-description">${esc(action.description)}</div>` : ''}
+        </div>
+        <button class="card-action-btn${stateClass}" data-typed-action="${esc(action.id)}" ${disabled ? 'disabled' : ''}>${esc(actionButtonText(phase, action))}</button>
+        <div class="card-action-note ${esc(phase)}" aria-live="polite">${esc(note)}</div>
+      </div>`;
+  }).join('');
+  const setupError = uiState.actionRunError
+    ? `<div class="card-action-contract-error">Action runner unavailable: ${esc(uiState.actionRunError)}</div>`
+    : '';
+  return `<div class="card-actions"><div class="card-actions-title">Actions</div>${setupError}${rows}</div>`;
+}
+
+function refreshTypedActionRow(row, action, run) {
+  if (!row) return;
+  const phase = PulseActions.runPhase(run);
+  const btn = row.querySelector('.card-action-btn');
+  const note = row.querySelector('.card-action-note');
+  if (btn) {
+    btn.textContent = actionButtonText(phase, action);
+    btn.disabled = ['queued', 'running', 'waiting_human', 'verified'].includes(phase);
+    btn.classList.toggle('state-done', phase === 'verified');
+    btn.classList.toggle('state-failed', phase === 'failed');
+  }
+  if (note) {
+    note.textContent = PulseActions.safeResultMessage(run, action);
+    note.className = `card-action-note ${phase}`;
+  }
+}
+
+function refreshTypedActionRows(c, action, run) {
+  document.querySelectorAll('.card-action-row').forEach(row => {
+    if (row.dataset.cardId === String(c.id) &&
+        row.dataset.actionId === action.id &&
+        Number(row.dataset.actionRevision) === action.revision) {
+      refreshTypedActionRow(row, action, run);
+    }
+  });
+}
+
+async function fetchExistingTypedRun(idempotencyKey) {
+  const { data, error } = await sb.from('mac_commands')
+    .select('id,status,result,pulse_card_id,pulse_action_id,pulse_revision,attempt,idempotency_key,created_at')
+    .eq('idempotency_key', idempotencyKey)
+    .single();
+  return error ? null : data;
+}
+
+async function pollTypedActionCommand(c, action, commandId) {
+  const pollKey = String(commandId);
+  if (uiState.actionPollers.has(pollKey)) return;
+  uiState.actionPollers.add(pollKey);
+  const started = Date.now();
+  try {
+    while (Date.now() - started < 75000) {
+      const { data, error } = await sb.from('mac_commands')
+        .select('id,status,result,pulse_card_id,pulse_action_id,pulse_revision,attempt,idempotency_key,created_at')
+        .eq('id', commandId).single();
+      if (error) {
+        refreshTypedActionRows(c, action, {
+          status: 'failed',
+          result: { safe_message: 'Pulse could not read the action receipt. Use Ask Pulse to diagnose before retrying.' },
+        });
+        return;
+      }
+      const key = PulseActions.actionRunKey(c.id, action);
+      uiState.actionRuns.set(key, data);
+      refreshTypedActionRows(c, action, data);
+      const phase = PulseActions.runPhase(data);
+      if (phase === 'verified') {
+        if (action.completion.close_card) await maybeResolveTypedActionCard(c);
+        return;
+      }
+      if (phase === 'failed') return;
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+  } finally {
+    uiState.actionPollers.delete(pollKey);
+  }
+}
+
+async function maybeResolveTypedActionCard(c) {
+  if (uiState.resolvingCards.has(c.id)) return;
+  const parsed = typedActions(c);
+  if (parsed.errors.length || !parsed.actions.length) return;
+  const allVerified = parsed.actions.every(action =>
+    PulseActions.runPhase(typedActionRun(c, action)) === 'verified'
+  );
+  if (!allVerified) return;
+  uiState.resolvingCards.add(c.id);
+  try {
+    const { error } = await sb.from('pulse_cards').update({
+      status: 'resolved',
+      resolved_note: 'All requested actions completed with verified receipts.',
+      answered_at: new Date().toISOString(),
+    }).eq('id', c.id).eq('status', 'open');
+    if (!error) loadCards();
+  } finally {
+    uiState.resolvingCards.delete(c.id);
+  }
+}
+
+async function runTypedCardAction(c, action, btn) {
+  if (uiState.actionRunError) return;
+  btn.disabled = true;
+  const existing = typedActionRun(c, action);
+  const existingPhase = PulseActions.runPhase(existing);
+  if (existing && ['queued', 'running', 'waiting_human'].includes(existingPhase)) {
+    await pollTypedActionCommand(c, action, existing.id);
+    return;
+  }
+  if (existingPhase === 'verified') return;
+
+  const attempt = PulseActions.nextAttempt(existing);
+  const row = PulseActions.buildCommandRow(c, action, attempt);
+  const { data, error } = await sb.from('mac_commands').insert(row).select().single();
+  let run = data;
+  if (error && error.code === '23505') {
+    run = await fetchExistingTypedRun(row.idempotency_key);
+  } else if (error) {
+    refreshTypedActionRows(c, action, {
+      status: 'failed',
+      result: { safe_message: 'Pulse could not queue this action. Nothing was executed. Use Ask Pulse to diagnose.' },
+    });
+    return;
+  }
+  if (!run) {
+    refreshTypedActionRows(c, action, {
+      status: 'failed',
+      result: { safe_message: 'Pulse found an existing request but could not resume it. Use Ask Pulse to diagnose.' },
+    });
+    return;
+  }
+  uiState.actionRuns.set(PulseActions.actionRunKey(c.id, action), run);
+  refreshTypedActionRows(c, action, run);
+  await pollTypedActionCommand(c, action, run.id);
+}
+
+function wireTypedCardActions(div, c) {
+  const parsed = typedActions(c);
+  if (parsed.errors.length || c.status !== 'open') return;
+  parsed.actions.forEach(action => {
+    const btn = [...div.querySelectorAll('[data-typed-action]')]
+      .find(candidate => candidate.dataset.typedAction === action.id);
+    if (!btn) return;
+    btn.onclick = () => runTypedCardAction(c, action, btn);
+    const run = typedActionRun(c, action);
+    if (run && ['queued', 'running', 'waiting_human'].includes(PulseActions.runPhase(run))) {
+      pollTypedActionCommand(c, action, run.id);
+    }
+  });
+  if (parsed.actions.some(action => action.completion.close_card) &&
+      parsed.actions.every(action => PulseActions.runPhase(typedActionRun(c, action)) === 'verified')) {
+    maybeResolveTypedActionCard(c);
+  }
+}
+
+async function loadTypedActionRuns(cards) {
+  uiState.actionRuns = new Map();
+  uiState.actionRunError = null;
+  const ids = (cards || [])
+    .filter(card => typedActions(card).actions.length)
+    .map(card => card.id);
+  if (!ids.length) return;
+  const { data, error } = await sb.from('mac_commands')
+    .select('id,status,result,pulse_card_id,pulse_action_id,pulse_revision,attempt,idempotency_key,created_at')
+    .in('pulse_card_id', ids)
+    .order('created_at', { ascending: false })
+    .limit(1000);
+  if (error) {
+    uiState.actionRunError = 'the typed-action database migration has not been applied or this account lacks access';
+    return;
+  }
+  for (const run of data || []) {
+    if (!run.pulse_action_id || !run.pulse_revision) continue;
+    const key = `${run.pulse_card_id}:${run.pulse_action_id}:r${run.pulse_revision}`;
+    const current = uiState.actionRuns.get(key);
+    if (!current || Number(run.attempt || 0) > Number(current.attempt || 0)) {
+      uiState.actionRuns.set(key, run);
+    }
+  }
 }
 
 function guideMeSteps(steps) {
@@ -777,13 +1034,23 @@ function renderCard(c) {
   const answered = c.status !== 'open';
   let body = '';
   if (c.type === 'action') {
+    const cardActionContract = typedActions(c);
+    const hasTypedContract = Object.prototype.hasOwnProperty.call(p, 'actions');
+    const hasTypedActions = cardActionContract.actions.length > 0;
+    const typedActionsVerified = hasTypedActions && cardActionContract.actions.every(action =>
+      PulseActions.runPhase(typedActionRun(c, action)) === 'verified'
+    );
     const guideBtn = c.yeshie_steps ? `<button class="btn-secondary" data-action="guide">Guide me</button>` : '';
-    const yeshieBtn = (c.yeshie_task && YESHIE_FLAG) ? `<button class="btn-secondary" data-action="yeshie-run">Yeshie: do it — I'll watch</button>` : '';
+    const yeshieBtn = (!hasTypedContract && c.yeshie_task && YESHIE_FLAG) ? `<button class="btn-secondary" data-action="yeshie-run">Yeshie: do it — I'll watch</button>` : '';
+    const doneBtn = !hasTypedContract || typedActionsVerified
+      ? `<button class="btn-primary" data-action="done">Done</button>`
+      : '';
     body = `
       <div class="action-line">
         <p class="title">${esc(p.title)}</p>
       </div>
       ${p.why ? `<p class="why">${esc(p.why)}</p>` : ''}
+      ${cardActionsPanel(c)}
       ${stepsAccordion(p.steps, c.step_state, p.step_actions)}
       <div class="actions">
         ${p.url ? `<button class="btn-primary" data-action="open">Open</button>` : ''}
@@ -791,7 +1058,7 @@ function renderCard(c) {
         ${guideBtn}
         ${yeshieBtn}
         <button class="btn-secondary" data-action="ask-pulse">Ask Pulse</button>
-        <button class="btn-primary" data-action="done">Done</button>
+        ${doneBtn}
         <button class="btn-secondary" data-action="snooze">Snooze</button>
         <button class="btn-secondary" data-action="not-mine">Not mine</button>
       </div>`;
@@ -861,6 +1128,7 @@ function renderCard(c) {
     });
   }
   wireSteps(div, c);
+  wireTypedCardActions(div, c);
   wireComments(div, c);
   return div;
 }
@@ -908,6 +1176,7 @@ async function loadCards() {
   if (!main) return;
   main.innerHTML = '';
   if (error) { main.innerHTML = `<div class="empty">Load error: ${esc(error.message)}</div>`; return; }
+  await loadTypedActionRuns(data);
   // "open" = the default view: status open AND not currently snoozed.
   // Snoozed-active cards are pulled out into their own section so nothing
   // silently vanishes — see isSnoozedActive() / renderSnoozedCard().
@@ -981,9 +1250,19 @@ function stopCardsRealtime() {
 // privileged (voice broker, realtime subscribe), so a wrong Google account
 // can't hold an authenticated-looking shell.
 function route(session) {
-  setPulseSession(isOwner(session) ? session : null);
+  const owner = isOwner(session);
+  setPulseSession(owner ? session : null);
+  const identity = !session
+    ? 'signed-out'
+    : `${owner ? 'owner' : 'wrong-account'}:${session.user.id}`;
+  // Supabase commonly emits INITIAL_SESSION immediately after getSession().
+  // Rendering the same identity twice starts two overlapping card loads; the
+  // slower one can reset the board to "Loading..." after the first finished.
+  // Token refreshes still update Pulse's session above without rebuilding UI.
+  if (identity === routedIdentity) return;
+  routedIdentity = identity;
   if (!session) { stopCardsRealtime(); renderLogin(); }
-  else if (isOwner(session)) renderApp(session);
+  else if (owner) renderApp(session);
   else { stopCardsRealtime(); renderWrongAccount(session); }
 }
 

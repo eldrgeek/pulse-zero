@@ -2,6 +2,9 @@
 
 The "needs-Mike action board." Four card types only: **ACTION**, **VERDICT**, **DECISION**, **BRIEF**. No wellness, digests, media, chat, alarms, or reader capture — see `../SOMA/pulse/STRIPPED-2026-07-15.md` for what got cut and why.
 
+_Updated 2026-07-27: Mike Wolf defined the executable-human-gate doctrine;
+OpenAI Codex implemented and documented typed, resumable, verified actions._
+
 Static single-page app (`public/index.html`) + shared SOMA Auth Supabase project (`omfwcodoimjmbrhssvfl`), table `public.pulse_cards`.
 
 ## Sign-in (2026-07-27)
@@ -23,7 +26,19 @@ Signing in with an account that isn't on the list now renders an explicit "signe
 
 Mike monitors many concurrent AI sessions at once. A card exists because **one specific turn needs Mike's action** — privilege only he holds, real blast radius, a taste/consent call, or an external human is involved. Anything else is the poster's own job (see `~/Projects/SOMA/OWNERSHIP-DEFAULT.md`).
 
-Every action card is: **one imperative line (≤60 chars) + a clickable link.** Never an essay. Put detail in `--steps`/`--why`, not the title. `pulse-push` enforces the length and warns (doesn't block) on a missing `--url` or a title that reads like a description/question instead of a command.
+Every action card starts with **one imperative line (≤60 chars)**. Never an
+essay; put context in `--why` and non-actionable orientation in `--steps`.
+A single static review destination may use `--url`. Any operation Mike is
+being asked to perform must instead be a typed `payload.actions` v1 button:
+workflow/web routes to Yeshie, Mac work routes to Mac automation, and an
+irreducible approval is represented as a web/workflow `human_gate` on the
+exact target control. Prose-only requests are invalid authoring—Mike should
+never have to translate a sentence into a hidden command. Completion comes
+from a verified executor receipt, not a manually checked instruction.
+
+`pulse-push` enforces the title length and typed-action shape. Links and
+`--step-actions` remain for single static destinations and legacy-card
+compatibility, not as the default executable handoff.
 
 **Tower** (`~/Projects/_estate/specs/tower-steward-v0.md`) is the steward persona that gatekeeps the board. Cards that aren't genuinely Mike-gated get bounced with reason *"You know what to do, don't you?"* and land in the collapsed **Bounced (RSI)** section on the board — visible, not deleted, so the bounce rate feeds back into fleet norms (the RSI loop).
 
@@ -51,7 +66,7 @@ insert and warns on stderr instead of silently duplicating. (Bug found 2026-07-2
 original `pulse-push` did a bare INSERT on every call with no dedup at all — multiple
 sessions/Tower pushing near-identical cards produced real duplicates on the board.)
 
-Optional Yeshie hand-off fields on `action` cards:
+Legacy Yeshie hand-off fields on `action` cards:
 
 ```bash
 bin/pulse-push action --title "Renew the TLS cert" --url "https://dash.example.com" \
@@ -63,19 +78,96 @@ bin/pulse-push action --title "Renew the TLS cert" --url "https://dash.example.c
 - `--yeshie-steps` — newline-separated human steps. Renders as a **[Guide me]** overlay checklist on the card. No wiring dependency, always works. Pass plain phrases, not pre-numbered lines — the overlay renders an `<ol>` and numbers them itself (`1. 1. Click...` is a double-number if your steps text already starts with `1.`).
 - `--yeshie-task` — inline JSON or a path to a Yeshie recipe/payload file. Renders a **[Yeshie: do it — I'll watch]** button, but only when the board is loaded with `?yeshie=1` (see Yeshie wiring status below).
 
-Optional `--step-actions` turns individual checklist rows into operations.
-The JSON array is index-aligned with `--steps`; each entry is `null` or an
-object with `command`, `payload`, and optional `label` / `success_message`.
-`open_url` renders as a native `<a target="_blank" rel="noopener">` link so
-browser popup policy cannot silently swallow it. `open_session`, `clipboard_set`, and
-`clipboard_take_and_deploy` go through the authenticated Mac bridge. When a
-deduped card's step text changes, `pulse-push` clears its index-aligned
-`step_state` so stale checkmarks cannot mark new work complete. A step-level
-`open_url` also satisfies the board's deep-link requirement. The CLI rejects
-non-array actions, unknown commands, non-object payloads, and actions beyond
-the number of checklist rows before anything reaches the live board.
+### Typed card actions (`payload.actions` v1)
 
-Board contract enforcement: `--title` is required, imperative, and rejected (exit 1) over 60 chars. `--url` is not required but you'll get a warning without one.
+Use `--actions` for every new card that asks Mike to do more than open the
+card's one deep link. The value may be inline JSON or a path to a JSON file.
+Every Mike-requested operation must be an action; prose in `--steps` is
+context, not an invisible request.
+
+```json
+[
+  {
+    "id": "gdoc-auth",
+    "revision": 1,
+    "executor": "workflow",
+    "label": "Authorize Google Docs",
+    "description": "Connect the Estate Google Docs bridge to Mike's account.",
+    "operation": "gdoc_bridge_authorize",
+    "params": {
+      "project_id": "gdoc-bridge-mw",
+      "account": "mw@mike-wolf.com"
+    },
+    "human_gate": {
+      "instruction": "On the Mac, click Continue to approve Google Drive access.",
+      "target": {
+        "url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "ref": "google.oauth.consent.primary",
+        "label": "Continue"
+      }
+    },
+    "completion": {
+      "mode": "verified",
+      "success_message": "Google Docs is connected.",
+      "close_card": true
+    },
+    "verification": {
+      "kind": "google_drive_about",
+      "params": {}
+    }
+  }
+]
+```
+
+The contract is deliberately family-agnostic:
+
+- `executor: "web"` and `"workflow"` route through the durable Mac-command
+  queue to Yeshie. Public Pulse HTTPS never calls `localhost`.
+- `executor: "mac"` routes through the same queue to allowlisted Mac
+  automation/mac-controller operations.
+- `human_gate` is allowed only on web/workflow actions. Yeshie must navigate
+  to and highlight `target.ref`, then observe Mike's click on that exact web
+  control. Pulse cannot substitute an approval/consent click.
+- All actions enqueue `command: "execute_card_action"` with the full typed
+  action plus `card_id`, `action_id`, `revision`, and an idempotency key.
+- `params`, verification metadata, and human-gate targets are persisted on the
+  card/command and therefore must contain references and non-secret metadata
+  only. Credentials remain on the Mac clipboard and are consumed by an
+  allowlisted Mac operation; never put a credential value in `--actions`.
+- `mac_commands` is the transport **and** durable receipt. Reloading Pulse
+  resumes the current row. A failed retry increments `attempt`; duplicate
+  clicks for the same attempt recover the existing row.
+- A row is complete only when it is `status=done` **and**
+  `result.verified=true`. `result.state=waiting_human` is surfaced while the
+  database row remains open. The UI displays only `safe_message`, never raw
+  executor output.
+- Set `completion.close_card=true` on the terminal action when the card should
+  auto-resolve after every typed action has a verified receipt. Otherwise the
+  normal Done button appears only after all actions verify.
+- `id + revision` is immutable. Changing an existing action requires
+  incrementing `revision`; `pulse-push` rejects a same-revision behavior
+  change so an old receipt cannot certify new behavior.
+
+Production has
+`supabase/migrations/20260727_typed_card_actions.sql` applied. New/local
+environments must apply it before typed actions can run; it adds only
+action-run metadata and a unique idempotency index to the existing
+`mac_commands` table.
+The current broker allowlist contains exactly
+`workflow/gdoc_bridge_authorize`; additional executor/operation pairs must be
+implemented and allowlisted in `pulse-mac-bridge` before a card may author
+them. Unknown pairs fail closed.
+
+`--step-actions` remains as a compatibility format for already-issued cards.
+Its JSON array is index-aligned with `--steps`; each entry is `null` or an
+object with `command`, `payload`, and optional `label` / `success_message`.
+`open_url` renders as a native `<a target="_blank" rel="noopener">` link.
+Other legacy commands go through the authenticated Mac bridge. New card
+authors should use `--actions`; the CLI rejects mixing both contracts.
+
+Board contract enforcement: `--title` is required, imperative, and rejected
+(exit 1) over 60 chars. A card without `--url`, typed `--actions`, or a
+legacy step link gets an authoring warning.
 
 ### Tower subcommands
 
@@ -140,11 +232,17 @@ Action cards render as one line (title) + a button row:
 - **Not mine** — Mike bounces his own card (`status=bounced`, `bounce_reason="Not mine (Mike)"`); shows up in Tower's Bounced (RSI) section.
 - **Snooze** — every card type (action/verdict/decision/brief) has this. Opens a preset picker (Tonight / Tomorrow morning / Next week, computed client-side in Mike's local time); the card leaves the default view until then. See "Snooze" under Pushing cards above for the CLI-side dedup interaction.
 
-Checklist rows may also carry a compact action button. Labels describe the
-actual outcome (`Open Gemini API Keys`, `Install & verify`) rather than the
-transport. Credential cards must say that secrets stay on the Mac clipboard
-and must never be pasted into Pulse chat. Verified non-link actions render
-as disabled **Done** buttons after refresh; link actions remain reusable.
+Typed actions render in an always-visible **Actions** panel; Mike never has
+to infer an operation from prose. Buttons expose queued, running,
+waiting-on-Mac, failed/retry, and verified states. Pending runs are resumed
+from `mac_commands` after refresh, verified actions render as disabled
+**Done**, and a typed card cannot be manually marked Done until all its
+actions have verified receipts.
+
+Legacy checklist rows may still carry a compact step-action button. Labels
+describe the actual outcome (`Open Gemini API Keys`, `Install & verify`)
+rather than the transport. Credential cards must say that secrets stay on
+the Mac clipboard and must never be pasted into Pulse chat.
 
 `renderApp()` may run more than once during Supabase's initial auth event.
 The realtime channel is therefore created once and explicitly removed on
@@ -177,6 +275,22 @@ The Netlify production environment therefore requires
 function.
 
 ## Yeshie wiring status (2026-07-26, confirmed live)
+
+The typed-action transport is now
+`Pulse → mac_commands:execute_card_action → pulse-mac-bridge → Yeshie`.
+It does not depend on a public HTTPS page reaching localhost and it does not
+offer clipboard/terminal handoff as the normal recovery path. The remainder
+of this section documents the older feature-flagged `yeshie_task` button,
+which stays only for compatibility while existing cards age out.
+
+The current Google Docs authorization action completes immediately when its
+read-only Drive probe already passes. If Google consent is genuinely needed,
+the broker starts the local OAuth callback, opens the exact consent URL,
+resolves `human_gate.target.ref` through its reviewed target allowlist, and
+calls Yeshie's protected `POST /teach/start` highlight/observe endpoint.
+Yeshie navigates and points; it never supplies the consent click. After Mike
+clicks the highlighted control, the same durable action row resumes and the
+executor verifies the resulting Drive access before Pulse can close the card.
 
 The relay's `POST http://localhost:3333/run` endpoint (body `{payload, params?, tabId?, timeoutMs?}`) is real and has open CORS (`Access-Control-Allow-Origin: *`, no auth check in the current handler — see `~/Projects/yeshie/packages/relay/index.js` around line 1657). The board's "Yeshie: do it" button calls it directly.
 
@@ -216,6 +330,13 @@ A small admin view surfacing this list on the board is a reasonable next pass, n
 
 **2026-07-26 (snooze + comments pass):** added `pulse_cards.snoozed_until timestamptz` (nullable, additive). Added new table `public.pulse_card_comments(id uuid pk, card_id uuid references pulse_cards(id) on delete cascade, author text default 'mike', body text not null, created_at timestamptz default now())`, RLS mirrors `pulse_cards` (service_role full access; `mw@mike-wolf.com` select/insert), added to the `supabase_realtime` publication, indexed on `card_id`. This time the migration **is** checked in: `supabase/migrations/20260726_snooze_and_comments.sql` (still applied ad hoc via the Management API, not via `supabase db push` — the file exists purely so the change is reproducible/reviewable).
 
+**2026-07-27 (typed actions):**
+`supabase/migrations/20260727_typed_card_actions.sql` adds nullable
+`pulse_card_id`, `pulse_action_id`, `pulse_revision`, `attempt`, and
+`idempotency_key` metadata to `public.mac_commands`, plus a partial unique
+index on non-null idempotency keys and a card/action lookup index. Legacy
+command rows remain valid.
+
 ## Automated smoke test
 
 `bin/test-board.sh` drives the deployed board end-to-end via Chrome CDP (same technique
@@ -238,5 +359,6 @@ dependencies (uses the CDP HTTP/WebSocket endpoints directly, no Playwright inst
 The signed-session function also has focused fail-closed tests:
 
 ```bash
-node --test test/pulse-agent-session.test.js
+node --test test/*.test.js
+python3 test/test_pulse_push_actions.py
 ```
