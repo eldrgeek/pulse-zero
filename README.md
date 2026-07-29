@@ -52,7 +52,7 @@ Netlify (`pulse-zero.netlify.app`), `publish = "public"`. No build step. Auto-de
 export PULSE_ZERO_SERVICE_KEY=<supabase secret key, sb_secret_...>   # never commit this
 bin/pulse-push action   --title "Approve X" --why "..." --steps "1. ...\n2. ..." --url "https://..." --source dee --key "approve-x"
 bin/pulse-push verdict  --artifact "Momentum v0" --url "https://momentum-demo-esr.netlify.app" --summary "..." --source dee --key "momentum-v0-verdict"
-bin/pulse-push decision --question "Ship A or B?" --options "A,B,Other" --source dee --key "ship-a-or-b"
+bin/pulse-push decision --question "Ship A or B?" --options "A,B,Other" --why "Context so Mike can decide here." --url "https://..." --source dee --key "ship-a-or-b"
 bin/pulse-push brief    --title "Estate brief 2026-07-16" --lines "Line1\nLine2\nLine3" --source dee --key "estate-brief-2026-07-16"
 ```
 
@@ -65,6 +65,28 @@ Even without `--key`, `action` cards get a safety net: pushing an action with th
 insert and warns on stderr instead of silently duplicating. (Bug found 2026-07-26: the
 original `pulse-push` did a bare INSERT on every call with no dedup at all — multiple
 sessions/Tower pushing near-identical cards produced real duplicates on the board.)
+
+### Decision cards must carry their own context (2026-07-29)
+
+Mike, from AGI-26: *"For each decision give me the info and give me a complete list of
+choices, and a faster route to more info — when Pulse talks to the team it's slow."*
+
+That slowness was structural, not cultural: a `decision` card's payload was
+`{question, options}` and nothing else, and the board rendered only the question plus up
+to four buttons. There was no field for context and nowhere to put a link, so every
+non-trivial decision required Mike to ask the posting session and wait on the round trip.
+
+`decision` now takes two optional fields, both rendered on the card:
+
+- `--why` — the context needed to decide, on the card itself. Not a summary of the
+  question; the facts that move the answer.
+- `--url` — deep link to the full writeup. **This is the "faster route to more info"** —
+  a published page Mike can open immediately instead of asking the team.
+
+`pulse-push` warns on stderr when a decision card has neither. Options should be a
+*complete* list of the real choices, not a sample — "Other" is a fallback, not a
+substitute for enumerating them. Cards pushed before this change render exactly as
+before; both fields are additive.
 
 Legacy Yeshie hand-off fields on `action` cards:
 

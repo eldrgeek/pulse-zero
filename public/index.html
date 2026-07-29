@@ -1078,6 +1078,8 @@ function renderCard(c) {
     const opts = (p.options || []).slice(0, 4);
     body = `
       <p class="title">${esc(p.question)}</p>
+      ${p.why ? `<p class="body-text">${esc(p.why)}</p>` : ''}
+      ${p.url ? `<p class="body-text"><a href="${esc(p.url)}" target="_blank" rel="noopener">Full writeup &rarr;</a></p>` : ''}
       <div class="actions">
         ${opts.map((o, i) => `<button class="btn-secondary" data-action="opt" data-value="${esc(o)}">${esc(o)}</button>`).join('')}
         <button class="btn-secondary" data-action="other">Other</button>

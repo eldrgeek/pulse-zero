@@ -330,7 +330,23 @@ def push(args, key, url):
     elif ctype == "verdict":
         payload = {"artifact_name": args.artifact, "url": args.url, "summary": args.summary}
     elif ctype == "decision":
-        payload = {"question": args.question, "options": [o.strip() for o in (args.options or "").split(",") if o.strip()]}
+        payload = {
+            "question": args.question,
+            "options": [o.strip() for o in (args.options or "").split(",") if o.strip()],
+        }
+        # --why / --url (2026-07-29): a decision card used to carry the question and
+        # nothing else, so Mike had to ask the posting session for context and wait on
+        # the round trip. Both fields are optional and additive; older cards without
+        # them render exactly as before.
+        if getattr(args, "why", None):
+            payload["why"] = args.why
+        if getattr(args, "url", None):
+            payload["url"] = args.url
+        if not getattr(args, "why", None) and not getattr(args, "url", None):
+            sys.stderr.write(
+                "warn: decision card has neither --why nor --url. Mike has to ask for "
+                "the context, which is the slow path this card type exists to avoid.\n"
+            )
     elif ctype == "brief":
         payload = {"title": args.title, "lines": args.lines}
 
@@ -653,6 +669,8 @@ def main():
     d = sub.add_parser("decision")
     d.add_argument("--question", required=True)
     d.add_argument("--options", required=True, help="comma-separated, max 4")
+    d.add_argument("--why", help="context shown on the card, so Mike can decide without asking the poster")
+    d.add_argument("--url", help="deep link to the full writeup — the fast route to more info")
     d.add_argument("--source")
     d.add_argument("--key", help="stable dedup key — replaces any existing OPEN card with the same key instead of inserting a new one")
 
