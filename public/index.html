@@ -1279,7 +1279,12 @@ boot();
 <script type="module">
   import { Conversation } from 'https://esm.sh/@elevenlabs/client@latest';
 
-  const CONSENT_KEY = 'pulse-talk-consented';
+  // Persists the user's last explicit Start/End choice — NOT a one-time mic
+  // consent flag. Only '1' while the user's last click was Start; cleared on
+  // End, on error, and on unexpected disconnect. Auto-resume (tab refocus,
+  // sign-in, page load) checks this so Pulse never comes back "available"
+  // unless the user actually asked it to.
+  const ACTIVE_KEY = 'pulse-talk-active';
 
   const orb = document.getElementById('talk-orb');
   const label = document.getElementById('talk-label');
@@ -1289,6 +1294,7 @@ boot();
   let conversation = null;
   let starting = false;
   let wantActive = false; // user's intent: should we be connected right now
+  let pausingForHidden = false; // true only during the tab-hidden auto-pause below
 
   async function getSignedUrl() {
     const { data: { session } } = await window.pulseSupabase.auth.getSession();
@@ -1381,10 +1387,10 @@ boot();
         mediaTimeout(8000),
       ]);
       pre.getTracks().forEach((t) => t.stop());
-      try { localStorage.setItem(CONSENT_KEY, '1'); } catch (_) {}
     } catch (err) {
       starting = false;
       wantActive = false;
+      try { localStorage.setItem(ACTIVE_KEY, '0'); } catch (_) {}
       setUi('error', (err && err.message) || 'Microphone access denied.');
       return;
     }
@@ -1395,8 +1401,21 @@ boot();
         Conversation.startSession({
           signedUrl,
           onConnect: () => { starting = false; setUi('listening'); },
-          onDisconnect: () => { conversation = null; if (wantActive) { wantActive = false; } setUi('off'); },
-          onError: (err) => { conversation = null; starting = false; wantActive = false; setUi('error', String(err)); },
+          onDisconnect: () => {
+            conversation = null;
+            wantActive = false;
+            if (!pausingForHidden) {
+              try { localStorage.setItem(ACTIVE_KEY, '0'); } catch (_) {}
+            }
+            setUi('off');
+          },
+          onError: (err) => {
+            conversation = null;
+            starting = false;
+            wantActive = false;
+            try { localStorage.setItem(ACTIVE_KEY, '0'); } catch (_) {}
+            setUi('error', String(err));
+          },
           onModeChange: ({ mode }) => {
             if (mode === 'speaking') setUi('speaking');
             else if (mode === 'thinking' || mode === 'processing') setUi('thinking');
@@ -1409,6 +1428,7 @@ boot();
       starting = false;
       wantActive = false;
       conversation = null;
+      try { localStorage.setItem(ACTIVE_KEY, '0'); } catch (_) {}
       setUi('error', String(err));
     }
   }
@@ -1424,7 +1444,13 @@ boot();
   }
 
   btn.addEventListener('click', () => {
-    if (conversation || starting) endTalk(); else startTalk();
+    if (conversation || starting) {
+      endTalk();
+      try { localStorage.setItem(ACTIVE_KEY, '0'); } catch (_) {}
+    } else {
+      try { localStorage.setItem(ACTIVE_KEY, '1'); } catch (_) {}
+      startTalk();
+    }
   });
 
   // Ambient: pause when the tab is hidden, resume when it's visible again —
@@ -1432,7 +1458,10 @@ boot();
   // minutes on a backgrounded tab.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-      if (conversation) endTalk().then(() => { wantActive = true; });
+      if (conversation) {
+        pausingForHidden = true;
+        endTalk().then(() => { wantActive = true; pausingForHidden = false; });
+      }
     } else if (wantActive && !conversation && !starting) {
       startTalk();
     }
@@ -1444,12 +1473,12 @@ boot();
   window.addEventListener('pulse-auth-state', ({ detail }) => {
     if (!detail.authenticated) {
       endTalk();
-    } else if (localStorage.getItem(CONSENT_KEY) === '1' && !document.hidden) {
+    } else if (localStorage.getItem(ACTIVE_KEY) === '1' && !document.hidden) {
       startTalk();
     }
   });
   if (window.pulseAuthenticated &&
-      localStorage.getItem(CONSENT_KEY) === '1' &&
+      localStorage.getItem(ACTIVE_KEY) === '1' &&
       !document.hidden) {
     startTalk();
   }
