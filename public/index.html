@@ -6,6 +6,7 @@
 <title>Pulse Zero</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="/pulse-actions.js"></script>
+<script src="/pulse-queue.js"></script>
 <link rel="stylesheet" href="/vendor/soma-feedback/soma-feedback.css">
 <style>
   :root { color-scheme: light dark; }
@@ -32,6 +33,29 @@
   .card {
     background: #16181b; border: 1px solid #26292d; border-radius: 14px;
     padding: 16px; margin-bottom: 12px; animation: in 0.2s ease;
+  }
+  .queue-card-shell { margin-bottom: 12px; }
+  .queue-card-shell > .card { margin-bottom: 0; }
+  .queue-card-summary {
+    list-style: none; cursor: pointer; padding: 13px 15px; border: 1px solid #26292d;
+    border-radius: 14px; background: #16181b; font-weight: 650;
+  }
+  .queue-card-summary::-webkit-details-marker { display: none; }
+  .queue-card-shell[open] > .queue-card-summary { border-radius: 14px 14px 0 0; }
+  .queue-card-shell[open] > .card { border-radius: 0 0 14px 14px; border-top: 0; }
+  .queue-meta { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 10px; align-items: center; }
+  .queue-rank, .queue-gate, .queue-state {
+    font-size: 11px; font-weight: 750; padding: 3px 8px; border-radius: 999px;
+    background: #22262b; color: #cfd5dc;
+  }
+  .queue-rank { background: #243456; color: #9dc0ff; }
+  .queue-state.your_turn { background: #4a3412; color: #ffd277; }
+  .queue-state.cleared { background: #12302e; color: #4ecdc4; }
+  .queue-why-now, .queue-only-mike { margin: 7px 0; font-size: 13px; line-height: 1.45; }
+  .queue-why-now strong { color: #e8b545; }
+  @media (prefers-color-scheme: light) {
+    .queue-card-summary { background: #fff; border-color: #e3e5e8; }
+    .queue-rank, .queue-gate, .queue-state { background: #edf0f4; color: #38414b; }
   }
   @media (prefers-color-scheme: light) {
     .card { background: #fff; border-color: #e3e5e8; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
@@ -254,6 +278,7 @@ const SUPABASE_URL = 'https://omfwcodoimjmbrhssvfl.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_vi2qDWjozUJ5mi9dwirkLA_rj6UaqLf';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const APP_ID = 'pulse-zero';
+const QUEUE_V1_FLAG = new URLSearchParams(location.search).get('queue_v1') === '1';
 const app = document.getElementById('app');
 window.pulseSupabase = sb;
 window.pulseAuthenticated = false;
@@ -312,6 +337,8 @@ const uiState = {
   actionRunError: null,      // schema/RLS error shown on typed-action cards
   actionPollers: new Set(),  // command ids currently being polled across re-renders
   resolvingCards: new Set(), // typed cards currently being auto-resolved
+  continuationRuns: new Map(), // card id -> durable return-to-owner run
+  continuationPollers: new Set(),
 };
 let cardsChannel = null;
 let routedIdentity = null;
@@ -381,7 +408,7 @@ async function renderLogin() {
 
 function cardKindLabel(t) { return t.toUpperCase(); }
 
-const YESHIE_FLAG = new URLSearchParams(location.search).get('yeshie') === '1';
+const YESHIE_FLAG = !QUEUE_V1_FLAG && new URLSearchParams(location.search).get('yeshie') === '1';
 
 function showOverlay(html) {
   const backdrop = document.createElement('div');
@@ -679,6 +706,28 @@ async function maybeResolveTypedActionCard(c) {
   if (!allVerified) return;
   uiState.resolvingCards.add(c.id);
   try {
+    if (c.queue_state === 'queued') {
+      const verifiedRuns = parsed.actions
+        .map(action => typedActionRun(c, action))
+        .filter(run => PulseActions.runPhase(run) === 'verified');
+      const receipt = verifiedRuns[verifiedRuns.length - 1];
+      const { data, error } = await sb.rpc('start_pulse_continuation_v1', {
+        p_card_id: c.id,
+        p_command_id: receipt.id,
+      });
+      if (!error) {
+        const continuation = Array.isArray(data) ? data[0] : data;
+        if (continuation) uiState.continuationRuns.set(c.id, continuation);
+        if (continuation) pollContinuationRun(c.id, continuation.id);
+        loadCards();
+      } else {
+        refreshTypedActionRows(c, parsed.actions[parsed.actions.length - 1], {
+          status: 'failed',
+          result: { safe_message: 'The action verified, but Pulse could not resume the owner safely. Use Ask Pulse.' },
+        });
+      }
+      return;
+    }
     const { error } = await sb.from('pulse_cards').update({
       status: 'resolved',
       resolved_note: 'All requested actions completed with verified receipts.',
@@ -702,12 +751,26 @@ async function runTypedCardAction(c, action, btn) {
   if (existingPhase === 'verified') return;
 
   const attempt = PulseActions.nextAttempt(existing);
-  const row = PulseActions.buildCommandRow(c, action, attempt);
-  const { data, error } = await sb.from('mac_commands').insert(row).select().single();
-  let run = data;
-  if (error && error.code === '23505') {
-    run = await fetchExistingTypedRun(row.idempotency_key);
-  } else if (error) {
+  let run;
+  let error;
+  if (c.queue_state === 'queued') {
+    const result = await sb.rpc('enqueue_pulse_action', PulseActions.enqueueRpcArgs(c, action, attempt));
+    error = result.error;
+    run = Array.isArray(result.data) ? result.data[0] : result.data;
+  } else {
+    // Compatibility path for pre-queue typed cards. Queue v1 never sends a
+    // browser-authored action payload; this path can be retired after the
+    // migration window and direct authenticated INSERT permission is revoked.
+    const row = PulseActions.buildCommandRow(c, action, attempt);
+    const result = await sb.from('mac_commands').insert(row).select().single();
+    error = result.error;
+    run = result.data;
+    if (error && error.code === '23505') {
+      run = await fetchExistingTypedRun(row.idempotency_key);
+      error = null;
+    }
+  }
+  if (error) {
     refreshTypedActionRows(c, action, {
       status: 'failed',
       result: { safe_message: 'Pulse could not queue this action. Nothing was executed. Use Ask Pulse to diagnose.' },
@@ -724,6 +787,42 @@ async function runTypedCardAction(c, action, btn) {
   uiState.actionRuns.set(PulseActions.actionRunKey(c.id, action), run);
   refreshTypedActionRows(c, action, run);
   await pollTypedActionCommand(c, action, run.id);
+}
+
+async function loadContinuationRuns(cards) {
+  uiState.continuationRuns = new Map();
+  const ids = (cards || []).map(card => card.id);
+  if (!ids.length) return;
+  const { data } = await sb.from('pulse_continuation_runs')
+    .select('id,card_id,status,safe_message,verification_summary,created_at,updated_at')
+    .in('card_id', ids)
+    .order('created_at', { ascending: false });
+  for (const run of data || []) {
+    if (!uiState.continuationRuns.has(run.card_id)) uiState.continuationRuns.set(run.card_id, run);
+  }
+}
+
+async function pollContinuationRun(cardId, runId) {
+  const key = String(runId);
+  if (uiState.continuationPollers.has(key)) return;
+  uiState.continuationPollers.add(key);
+  const started = Date.now();
+  try {
+    while (Date.now() - started < 75000) {
+      const { data, error } = await sb.from('pulse_continuation_runs')
+        .select('id,card_id,status,safe_message,verification_summary,created_at,updated_at')
+        .eq('id', runId).single();
+      if (error) return;
+      uiState.continuationRuns.set(cardId, data);
+      if (['succeeded', 'failed'].includes(data.status)) {
+        loadCards();
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+  } finally {
+    uiState.continuationPollers.delete(key);
+  }
 }
 
 function wireTypedCardActions(div, c) {
@@ -1119,13 +1218,13 @@ function renderCard(c) {
           input.focus();
           input.onkeydown = async (e) => {
             if (e.key === 'Enter' && input.value.trim()) {
-              await answerCard(c.id, { action_id: action, value: input.value.trim() });
+              await answerCard(c, { action_id: action, value: input.value.trim() });
             }
           };
           return;
         }
         const value = btn.dataset.value || action;
-        await answerCard(c.id, { action_id: action, value });
+        await answerCard(c, { action_id: action, value });
       };
     });
   }
@@ -1144,7 +1243,76 @@ function renderBouncedCard(c) {
   return div;
 }
 
-async function answerCard(id, answer) {
+function queueCardTitle(c) {
+  const p = c.payload || {};
+  return p.title || p.artifact_name || p.question || 'Untitled gate';
+}
+
+function queueExecutionLabel(state, c) {
+  const target = ((c.gate_contract || {}).target || {}).label || 'the highlighted control';
+  return {
+    ready: 'Ready',
+    team_preparing: 'Team preparing',
+    your_turn: `Your turn: ${target}`,
+    team_resuming: 'Team resuming',
+    verifying: 'Verifying',
+    cleared: 'Cleared',
+    could_not_verify: 'Could not verify',
+  }[state] || 'Ready';
+}
+
+function renderQueueCard(c) {
+  const gate = c.gate_contract || {};
+  const action = typedActions(c).actions[0];
+  const run = action ? typedActionRun(c, action) : null;
+  const continuation = uiState.continuationRuns.get(c.id) || null;
+  const stateRun = !run && continuation ? { status: 'done', result: { verified: true } } : run;
+  const executionState = PulseQueue.executionState(stateRun, continuation);
+  const meta = `
+    <div class="queue-meta">
+      <span class="queue-rank">#${esc(String(c.queue_position))}</span>
+      <span class="queue-gate">${esc((gate.kind || 'gate').replace(/^./, x => x.toUpperCase()))}</span>
+      <span class="queue-state ${esc(executionState)}">${esc(queueExecutionLabel(executionState, c))}</span>
+      <span class="muted">~${esc(String(gate.estimated_human_seconds || '?'))} sec</span>
+    </div>
+    <p class="queue-why-now"><strong>Why now:</strong> ${esc(c.priority_reason || '')}</p>
+    <p class="queue-only-mike">${esc(gate.reason_only_mike || '')}</p>`;
+  const card = renderCard(c);
+  if (continuation) {
+    card.querySelectorAll('button[data-action="opt"], button[data-action="other"], button[data-action="accept"], button[data-action="change"], button[data-action="retire"]')
+      .forEach(button => { button.disabled = true; });
+  }
+  if (Number(c.queue_position) === 1) {
+    const wrapper = document.createElement('section');
+    wrapper.className = 'queue-card-shell';
+    wrapper.innerHTML = meta;
+    wrapper.appendChild(card);
+    return wrapper;
+  }
+  const wrapper = document.createElement('details');
+  wrapper.className = 'queue-card-shell';
+  wrapper.innerHTML = `<summary class="queue-card-summary">#${esc(String(c.queue_position))} · ${esc(queueCardTitle(c))}</summary>${meta}`;
+  wrapper.appendChild(card);
+  return wrapper;
+}
+
+async function answerCard(cardOrId, answer) {
+  const card = typeof cardOrId === 'object' ? cardOrId : null;
+  const id = card ? card.id : cardOrId;
+  if (card && card.queue_state === 'queued') {
+    const { data, error } = await sb.rpc('answer_pulse_gate_v1', {
+      p_card_id: id,
+      p_answer: answer,
+    });
+    if (error) { alert('Failed: ' + error.message); return; }
+    const continuation = Array.isArray(data) ? data[0] : data;
+    if (continuation) {
+      uiState.continuationRuns.set(id, continuation);
+      pollContinuationRun(id, continuation.id);
+    }
+    loadCards();
+    return;
+  }
   const { error } = await sb.from('pulse_cards').update({
     status: answer.action_id === 'retire' || answer.action_id === 'skip' ? 'retired' : 'answered',
     answer,
@@ -1154,7 +1322,41 @@ async function answerCard(id, answer) {
   loadCards();
 }
 
-async function loadCards() {
+async function loadQueueCardsV1() {
+  const main = document.getElementById('cards');
+  if (!main) return;
+  main.innerHTML = '';
+  const queueResult = await sb.from('pulse_active_queue_v1')
+    .select('*')
+    .order('queue_position', { ascending: true })
+    .limit(5);
+  if (queueResult.error) {
+    main.innerHTML = `<div class="empty">Queue preview unavailable: ${esc(queueResult.error.message)}</div>`;
+    document.getElementById('count').textContent = 'feature flag only';
+    return;
+  }
+  const cards = queueResult.data || [];
+  const ids = cards.map(card => card.id);
+  if (ids.length) {
+    const commentsResult = await sb.from('pulse_card_comments').select('*').in('card_id', ids);
+    if (!commentsResult.error) {
+      for (const card of cards) {
+        card.pulse_card_comments = (commentsResult.data || []).filter(comment => comment.card_id === card.id);
+      }
+    }
+  }
+  await Promise.all([loadTypedActionRuns(cards), loadContinuationRuns(cards)]);
+  const overflow = Number(cards[0] && cards[0].ready_behind_count || 0);
+  document.getElementById('count').textContent = `${cards.length} real blocker${cards.length === 1 ? '' : 's'}` +
+    (overflow ? ` · ${overflow} ready behind` : '');
+  if (!cards.length) {
+    main.innerHTML = '<div class="empty">Nothing genuinely needs you. The team is working.</div>';
+    return;
+  }
+  cards.forEach(card => main.appendChild(renderQueueCard(card)));
+}
+
+async function loadLegacyCards() {
   // Active work and terminal history are separate queries. A single
   // status-sorted LIMIT could otherwise hide every open card once terminal
   // history grows past 100 rows.
@@ -1228,9 +1430,13 @@ async function loadCards() {
   }
 }
 
+async function loadCards() {
+  return QUEUE_V1_FLAG ? loadQueueCardsV1() : loadLegacyCards();
+}
+
 async function renderApp(session) {
   app.innerHTML = `
-    <header><h1>Pulse Zero</h1><span class="count" id="count"></span></header>
+    <header><h1>${QUEUE_V1_FLAG ? 'Needs Mike' : 'Pulse Zero'}</h1><span class="count" id="count"></span></header>
     <main id="cards"><div class="empty">Loading...</div></main>`;
   await loadCards();
   if (!cardsChannel) {
