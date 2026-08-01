@@ -4,7 +4,12 @@
 // this does NOT route through the shared VPS feedback-svc. Stubbed as
 // "all feedback -> review queue" (no clarity loop, no admin-build fast path yet):
 // every accepted submission lands in public.pulse_zero_feedback with status='new'.
-// See pulse-zero/README.md "Feedback" section for what's stubbed vs complete.
+// See pulse-zero/README.md "Feedback" and INVARIANT-SHADOW.md for scope.
+const {
+  buildFeedbackEnvelope,
+  runShadow,
+} = require('./soma-invariant-shadow');
+
 const SUPABASE_URL = 'https://omfwcodoimjmbrhssvfl.supabase.co';
 
 exports.handler = async (event) => {
@@ -70,10 +75,34 @@ exports.handler = async (event) => {
       const errText = await resp.text();
       return { statusCode: resp.status, headers: cors, body: JSON.stringify({ error: errText }) };
     }
+    let inserted = null;
+    try {
+      const representation = await resp.json();
+      inserted = Array.isArray(representation) ? representation[0] : representation;
+    } catch (_) {
+      // Prefer=return=representation should provide the row. Preserve the
+      // existing accepted response if an intermediary strips the body.
+    }
+    const filedAt = new Date().toISOString();
+    const envelope = buildFeedbackEnvelope(row, inserted, filedAt);
+    const shadow = runShadow(envelope);
+    if (shadow.status === 'degraded') {
+      console.warn(`soma invariant shadow degraded: ${shadow.error}`);
+    } else if (shadow.status === 'evaluated') {
+      console.info(`soma invariant shadow ${shadow.decision.decision}: ${shadow.decision.evaluation_id}`);
+    }
+    const item = envelope.work_items[0];
     return {
       statusCode: 200,
       headers: cors,
-      body: JSON.stringify({ status: 'accepted', filedAt: new Date().toISOString(), build: false }),
+      body: JSON.stringify({
+        status: 'accepted',
+        filedAt,
+        build: false,
+        work_item_id: item.work_item_id,
+        submission_receipt_id: item.receipt_ids[0],
+        fingerprint: item.fingerprint,
+      }),
     };
   } catch (e) {
     return { statusCode: 500, headers: cors, body: JSON.stringify({ error: e.message }) };
