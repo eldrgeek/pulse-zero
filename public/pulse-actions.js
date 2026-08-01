@@ -149,6 +149,23 @@
     };
   }
 
+  // Queue v1 never lets the browser supply an action envelope. The database
+  // re-reads the reviewed action from the queued card and constructs the
+  // mac_commands row. buildCommandRow remains for legacy typed cards during
+  // the compatibility window.
+  function enqueueRpcArgs(card, action, attempt) {
+    const errors = actionErrors(action, 0);
+    if (errors.length) throw new Error(errors.join('; '));
+    if (!isObject(card) || !nonEmptyString(card.id)) throw new Error('card.id is required');
+    if (!Number.isInteger(attempt) || attempt < 1) throw new Error('attempt must be a positive integer');
+    return {
+      p_card_id: card.id,
+      p_action_id: action.id,
+      p_revision: action.revision,
+      p_attempt: attempt,
+    };
+  }
+
   function latestRun(runs, cardId, action) {
     return (runs || [])
       .filter((run) =>
@@ -203,6 +220,7 @@
     actionRunKey,
     idempotencyKey,
     buildCommandRow,
+    enqueueRpcArgs,
     latestRun,
     runPhase,
     safeResultMessage,
