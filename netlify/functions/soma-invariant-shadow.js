@@ -6,6 +6,7 @@
 // and a shadow failure is diagnostic only.
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
+const { evaluateDeterministic } = require('./lib/soma-invariant-deterministic.js');
 
 const POLICY_VERSION = 'soma-invariants/1';
 const INPUT_CONTRACT = 'soma-invariant-check-input/1';
@@ -105,6 +106,20 @@ function buildFeedbackEnvelope(row, insertedRow, filedAt) {
   };
 }
 
+/**
+ * WQ-251 (2026-08-11). Previously this function had exactly one path: spawn the
+ * Python gate. Netlify's function runtime has no python3 and no way to ship one,
+ * so in production that spawn ALWAYS failed and this adapter could only ever
+ * return {status:'degraded'} — which is why SOMA_INVARIANT_SHADOW had to stay
+ * unset in prod and the shadow has never observed a single real ingress.
+ *
+ * Now the deterministic rules (SCHEMA_CONTRACT, WI1_IDENTITY_DEDUPE) run in
+ * process from ./lib/soma-invariant-deterministic.js, verified byte-identical to
+ * the Python gate across 20 shared fixtures by
+ * test/invariant-js-conformance.test.js. SOMA_INVARIANT_GATE remains supported
+ * and still WINS when set, because it is the full rule set; the JS path is the
+ * deterministic subset and says so in `coverage`.
+ */
 function runShadow(envelope, options = {}) {
   const env = options.env || process.env;
   if (env.SOMA_INVARIANT_SHADOW !== '1') {
@@ -112,7 +127,26 @@ function runShadow(envelope, options = {}) {
   }
   const command = env.SOMA_INVARIANT_GATE;
   if (!command) {
-    return { status: 'degraded', error: 'SOMA_INVARIANT_GATE is not configured' };
+    try {
+      const local = evaluateDeterministic(envelope);
+      return {
+        status: 'evaluated',
+        coverage: 'deterministic-subset',
+        engine: 'js',
+        decision: {
+          policy_version: local.policy_version,
+          turn_id: String(envelope && envelope.turn_id ? envelope.turn_id : 'invalid-input'),
+          enforcement: 'shadow',
+          blocking: false,
+          deterministic: local.deterministic,
+          judgment: [],
+          decision: local.decision,
+          not_evaluated: local.not_ported,
+        },
+      };
+    } catch (error) {
+      return { status: 'degraded', engine: 'js', error: error.message };
+    }
   }
   const spawn = options.spawn || spawnSync;
   try {
@@ -129,10 +163,11 @@ function runShadow(envelope, options = {}) {
     if (result.error || result.status !== 0) {
       return {
         status: 'degraded',
+        engine: 'python',
         error: String(result.error || result.stderr || `exit ${result.status}`).trim(),
       };
     }
-    return { status: 'evaluated', decision: JSON.parse(result.stdout) };
+    return { status: 'evaluated', coverage: 'full', engine: 'python', decision: JSON.parse(result.stdout) };
   } catch (error) {
     return { status: 'degraded', error: error.message };
   }
