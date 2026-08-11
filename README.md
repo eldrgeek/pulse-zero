@@ -43,6 +43,31 @@ from a verified executor receipt, not a manually checked instruction.
 `--step-actions` remain for single static destinations and legacy-card
 compatibility, not as the default executable handoff.
 
+**One card = one decision (Mike, 2026-08-11).** A card is one specific turn
+needing one action — never a paragraph Mike must parse into two mental
+decisions. "Should we kill/keep X *and* Y" is **two** cards with two `--key`s,
+each carrying its own inspect `--url` and its own action, never one bundled
+card. (Live violation that prompted this: a single "Kill or keep revolution1x1
+and soma-portfolio-map?" card, split into two on Mike's feedback.)
+
+**Status is not a card.** A finding that something is down/broken/stale is not
+a card unless it ships with a real action Mike can take. If the fix needs
+investigation before a safe action exists, do the investigation first and
+surface the card only once there's a button behind it — or say plainly
+in-conversation that it's still being diagnosed. (Live violation: a "Tower is
+down 10.1d" card with no action control.)
+
+**Every card carries a feedback channel, always.** `renderComments()` puts a
+"Comment or give feedback on this card" thread on *every* card — even one that
+executed perfectly — so Mike can rate/correct the card itself, and the reply
+loop (`pulse-answer`) routes it back to the fleet. This is the RSI signal on
+card-authoring quality; do not remove it, and keep its label framed as
+feedback, not just Q&A.
+
+The gold standard Mike named (2026-08-11): the "Connect Stripe to SOMA-Relay"
+card — *"an excellent card that worked perfectly."* One decision, an inspect
+path, a real typed action. Author to that.
+
 **Tower** (`~/Projects/_estate/specs/tower-steward-v0.md`) is the steward persona that gatekeeps the board. Cards that aren't genuinely Mike-gated get bounced with reason *"You know what to do, don't you?"* and land in the collapsed **Bounced (RSI)** section on the board — visible, not deleted, so the bounce rate feeds back into fleet norms (the RSI loop).
 
 ## Executable queue v1 preview (implementation artifact, 2026-08-01)
@@ -88,7 +113,18 @@ bin/pulse-push brief    --title "Estate brief 2026-07-16" --lines "Line1\nLine2\
 **Always pass `--key` for anything a session might push more than once** (a retry, a
 recurring nightly job, a card re-pushed after a code change). `--key` is a stable dedup
 slug: pushing again with the same key **updates the existing OPEN card in place** instead
-of inserting a duplicate — same "replace same key" semantics as `_estate/bin/pulse-enqueue`.
+of inserting a duplicate. `_estate/bin/pulse-enqueue` implements the same "replace same
+key" semantics on its queue file.
+
+> **Correction (2026-08-01).** This line previously cited `pulse-enqueue` as the
+> *reference implementation* of those semantics. It wasn't one: `pulse-enqueue` computed
+> the replace-same-key list in memory and then opened the queue in append mode and never
+> wrote that list, so same-key enqueues silently accumulated duplicates and
+> `pulse-morning` delivered the stale row too. Fixed the same day (read-modify-write under
+> an `flock`, atomic `os.replace`), along with the deeper problem that `pulse-enqueue`
+> validated nothing at all. The card contract now lives in
+> [`bin/pulse_card_contract.py`](bin/pulse_card_contract.py) and is enforced by every
+> writer to this board — see that module's SCOPE docstring for the verified caller list.
 Even without `--key`, `action` cards get a safety net: pushing an action with the same
 `--title` (case-insensitive) and `--source` as an existing OPEN action card skips the
 insert and warns on stderr instead of silently duplicating. (Bug found 2026-07-26: the

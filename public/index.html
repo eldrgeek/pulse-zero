@@ -1130,7 +1130,7 @@ function renderComments(c) {
     <div class="comment-item"><span class="who">${esc(cm.author)} · ${esc(new Date(cm.created_at).toLocaleString())}</span>${esc(cm.body)}</div>
   `).join('');
   const pendingNote = pending ? `<div class="comment-pending">Pulse is asking the team…</div>` : '';
-  const toggleLabel = comments.length ? `Pulse thread (${comments.length})` : 'Ask Pulse about this task';
+  const toggleLabel = comments.length ? `Pulse thread (${comments.length})` : 'Comment or give feedback on this card';
   return `
     <div class="comments">
       <button class="comment-toggle" data-action="toggle-comments">${toggleLabel}</button>
@@ -1138,7 +1138,7 @@ function renderComments(c) {
         ${list}
         ${pendingNote}
         <div class="comment-input-row">
-          <input class="textresp comment-input" placeholder="Ask about this task — never paste credentials here" />
+          <input class="textresp comment-input" placeholder="Comment, rate, or ask — the team reads every card's thread (never paste credentials)" />
           <button class="btn-secondary" data-action="send-comment">Send</button>
         </div>
       </div>
