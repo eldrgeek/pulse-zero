@@ -69,6 +69,11 @@
   .kind-verdict { background: #12302e; color: #4ecdc4; }
   .kind-decision { background: #2a1830; color: #d68fe0; }
   .kind-brief { background: #16233a; color: #6ea8fe; }
+  .escalation {
+    display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; padding: 3px 8px; border-radius: 6px; margin-bottom: 8px;
+    margin-left: 6px; background: #3a1414; color: #ff9a8a; vertical-align: middle;
+  }
   .title { font-size: 16.5px; font-weight: 620; margin: 0 0 4px; line-height: 1.3; }
   .why, .body-text { font-size: 14px; opacity: 0.75; margin: 0 0 10px; line-height: 1.45; white-space: pre-wrap; }
   a.link { color: #6ea8fe; word-break: break-all; }
@@ -284,6 +289,48 @@ window.pulseSupabase = sb;
 window.pulseAuthenticated = false;
 
 function esc(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ── Escalation banner (WQ-261) ──────────────────────────────────────
+// The "⏫ Day N — still waiting: " nudge is a RENDER concern, not part of a
+// card's title. pulse-drain historically concatenated it into the stored
+// title, which (a) broke the one-imperative-line-≤60-char board contract,
+// (b) truncated real titles mid-word as the banner ate the budget, and
+// (c) compounded into "still waiting: still waiting: " because the strip
+// regex only half-matched its own previous output.
+//
+// `payload.escalation_day` is already a first-class field on every escalated
+// card, so the banner is derived from it here and stripped from whatever the
+// stored title happens to carry. Rows written the old way still render
+// sanely; rows written without the banner render identically. This is the
+// prerequisite for dropping ESCALATION_TITLE_MAX (=160) and collapsing the
+// two title contracts back to one.
+function stripEscalationBanner(title) {
+  let t = String(title == null ? '' : title).trim();
+  t = t.replace(/^⏫\s*Day\s*\d+\s*[—–-]\s*/i, '');
+  // Repeated prefixes: the old regex left one behind per escalation.
+  let guard = 0;
+  while (/^still waiting:\s*/i.test(t) && guard++ < 20) {
+    t = t.replace(/^still waiting:\s*/i, '');
+  }
+  return t.trim();
+}
+
+function escalationDay(c) {
+  const n = Number(((c || {}).payload || {}).escalation_day || 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function escalationBadge(c) {
+  const day = escalationDay(c);
+  if (!day) return '';
+  return `<span class="escalation" title="Escalated by pulse-drain — still waiting after ${day} day${day === 1 ? '' : 's'}">⏫ Day ${day}</span>`;
+}
+
+// The one place any surface should read a card's display title from.
+function cardTitleText(c) {
+  const p = (c || {}).payload || {};
+  return stripEscalationBanner(p.title || p.artifact_name || p.question || '') || 'Untitled card';
+}
 
 function setPulseSession(session) {
   window.pulseAuthenticated = !!session;
@@ -1023,8 +1070,7 @@ function openSnoozeMenu(c) {
 }
 
 function renderSnoozedCard(c) {
-  const p = c.payload || {};
-  const title = p.title || p.artifact_name || p.question || 'Untitled card';
+  const title = cardTitleText(c);
   const until = new Date(c.snoozed_until);
   const div = document.createElement('div');
   div.className = 'snoozed-card';
@@ -1146,7 +1192,7 @@ function renderCard(c) {
       : '';
     body = `
       <div class="action-line">
-        <p class="title">${esc(p.title)}</p>
+        <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}</p>
       </div>
       ${p.why ? `<p class="why">${esc(p.why)}</p>` : ''}
       ${cardActionsPanel(c)}
@@ -1163,7 +1209,7 @@ function renderCard(c) {
       </div>`;
   } else if (c.type === 'verdict') {
     body = `
-      <p class="title">${esc(p.artifact_name)}</p>
+      <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}</p>
       <p class="why">${esc(p.summary)}</p>
       ${p.url ? `<p><a class="link" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a></p>` : ''}
       <div class="actions">
@@ -1176,7 +1222,7 @@ function renderCard(c) {
   } else if (c.type === 'decision') {
     const opts = (p.options || []).slice(0, 4);
     body = `
-      <p class="title">${esc(p.question)}</p>
+      <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}</p>
       ${p.why ? `<p class="body-text">${esc(p.why)}</p>` : ''}
       ${p.url ? `<p class="body-text"><a href="${esc(p.url)}" target="_blank" rel="noopener">Full writeup &rarr;</a></p>` : ''}
       <div class="actions">
@@ -1187,7 +1233,7 @@ function renderCard(c) {
       <input class="textresp" style="display:none" placeholder="Your answer..." />`;
   } else if (c.type === 'brief') {
     body = `
-      <p class="title">${esc(p.title || 'Daily brief')}</p>
+      <p class="title">${esc(stripEscalationBanner(p.title) || 'Daily brief')}${escalationBadge(c)}</p>
       <p class="body-text">${esc(p.lines || '')}</p>
       <div class="actions">
         <button class="btn-secondary" data-action="ack">Ack</button>
@@ -1235,8 +1281,7 @@ function renderCard(c) {
 }
 
 function renderBouncedCard(c) {
-  const p = c.payload || {};
-  const title = p.title || p.artifact_name || p.question || 'Untitled card';
+  const title = cardTitleText(c);
   const div = document.createElement('div');
   div.className = 'bounced-card';
   div.innerHTML = `<p class="title">${esc(title)}</p><p class="reason">${esc(c.bounce_reason || '(no reason given)')} — <span class="muted">from ${esc(c.created_by)}</span></p>`;
@@ -1245,7 +1290,7 @@ function renderBouncedCard(c) {
 
 function queueCardTitle(c) {
   const p = c.payload || {};
-  return p.title || p.artifact_name || p.question || 'Untitled gate';
+  return stripEscalationBanner(p.title || p.artifact_name || p.question) || 'Untitled gate';
 }
 
 function queueExecutionLabel(state, c) {
