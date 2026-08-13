@@ -506,4 +506,15 @@ The signed-session function also has focused fail-closed tests:
 ```bash
 node --test test/*.test.js
 python3 test/test_pulse_push_actions.py
+python3 test/test_card_contract_gate.py
 ```
+
+`test/pulse-drill-accordion.test.js` (part of the `node --test` run above) is a
+hand-rolled-DOM unit test of the drill-down accordion's real logic
+(`toggleDrill`/`togglePin`/`setDrillOpen`) — no jsdom dependency, matching the
+zero-extra-deps convention elsewhere in this repo; it fakes just enough
+`document.querySelector`/`getElementById` to exercise the actual functions
+extracted from `public/index.html`, not a reimplementation of them.
+`test/test_card_contract_gate.py` covers the 2026-08-13 hard link-surface gate
+and the brief card's optional `full_text` field directly against
+`pulse_card_contract.validate_payload()`.
