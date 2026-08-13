@@ -77,8 +77,33 @@
   .title { font-size: 16.5px; font-weight: 620; margin: 0 0 4px; line-height: 1.3; }
   .why, .body-text { font-size: 14px; opacity: 0.75; margin: 0 0 10px; line-height: 1.45; white-space: pre-wrap; }
   a.link { color: #6ea8fe; word-break: break-all; }
-  .steps-accordion { margin: 8px 0 10px; }
-  .steps-toggle { background: none; border: none; padding: 0; font-size: 13px; font-weight: 600; opacity: 0.7; cursor: pointer; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+  /* Unified drill-down accordion (steps + brief full-text). Default:
+     opening one closes every other open, unpinned drill (Mike, 2026-08-13).
+     Touch target padding trick keeps the compact underlined-link look while
+     still hitting the >=44px tap-target floor (padding expands the
+     clickable area; negative margin keeps the visual box the same size). */
+  .drill { margin: 8px 0 10px; }
+  .drill-header { display: flex; align-items: center; gap: 2px; }
+  .drill-toggle {
+    background: none; border: none; padding: 12px 4px; margin: -12px 0 -12px -4px;
+    font-size: 13px; font-weight: 600; opacity: 0.7; cursor: pointer; color: inherit;
+    text-decoration: underline; text-underline-offset: 2px;
+  }
+  .drill-toggle:focus-visible { outline: 2px solid #6ea8fe; outline-offset: 2px; opacity: 1; }
+  .drill-pin {
+    background: none; border: none; width: 32px; height: 32px; margin: -6px 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; opacity: 0.35; cursor: pointer; border-radius: 6px;
+  }
+  .drill-pin.pinned { opacity: 1; background: #2a2210; }
+  .drill-pin:focus-visible { outline: 2px solid #6ea8fe; outline-offset: 1px; }
+  .drill-fulltext { font-size: 13.5px; opacity: 0.85; line-height: 1.5; white-space: pre-wrap; margin: 8px 0 0; }
+  .drill-hint {
+    font-size: 12.5px; opacity: 0.65; padding: 8px 10px; margin: 0 0 10px;
+    border: 1px solid #2a2a2a; border-radius: 8px; display: flex;
+    align-items: center; justify-content: space-between; gap: 10px;
+  }
+  .drill-hint button { background: none; border: none; color: #6ea8fe; cursor: pointer; padding: 8px; font-size: 12.5px; }
   .steps-list { list-style: none; margin: 8px 0 0; padding: 0; }
   .step-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; font-size: 13.5px; line-height: 1.4; }
   .step-item label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; width: 100%; }
@@ -382,7 +407,13 @@ function safeHttpUrl(rawUrl) {
 // loadCards() full re-render (realtime pulses on unrelated cards would
 // otherwise silently collapse an open comment thread mid-conversation).
 const uiState = {
-  openSteps: new Set(),      // card ids with the steps accordion expanded
+  // Unified drill-down state (steps-accordion + brief full-text), Mike
+  // 2026-08-13: "if I open up one accordion, it closes the other" is the
+  // default; a pinned drill is exempt. IDs are "steps:<cardId>" /
+  // "brief:<cardId>". See toggleDrill()/togglePin() below.
+  openDrills: new Set(),
+  pinnedDrills: new Set(),
+  drillHintDismissed: (() => { try { return localStorage.getItem('pulse_drill_hint_dismissed') === '1'; } catch (_) { return false; } })(),
   openComments: new Set(),   // card ids with the comment thread expanded
   pendingComment: new Map(), // card id -> ISO timestamp of Mike's last un-replied comment
   actionRuns: new Map(),     // cardId:actionId:revision -> latest durable mac_commands run
@@ -486,7 +517,92 @@ function parseSteps(raw) {
     .map(s => s.replace(/^\d+[.)]\s*/, ''));
 }
 
-function stepsAccordion(rawSteps, stepState, stepActions) {
+// ── Unified drill-down accordions (steps, brief full-text) ─────────────
+// One shared mechanism for every collapsed-by-default detail panel on the
+// board. Default: opening one closes every other OPEN, UNPINNED drill
+// (Mike, 2026-08-13 — "if I open up one accordion, it closes the other").
+// Pin a drill to exempt it: tap its 📌 (the touch equivalent — there is no
+// Shift key on a phone, and Mike reads this board there) or hold
+// Shift/Cmd/Ctrl while clicking or pressing Enter on its header (a
+// keyboard-activated <button> click carries the modifier state of the key
+// that triggered it, so Shift+Enter / Cmd+Enter work with no extra code).
+function drillMarkup(id, label, bodyHtml) {
+  const pinned = uiState.pinnedDrills.has(id);
+  return `
+    <div class="drill" data-drill="${esc(id)}">
+      <div class="drill-header">
+        <button class="drill-toggle" data-drill-toggle="${esc(id)}" aria-expanded="false">${label}</button>
+        <button type="button" class="drill-pin${pinned ? ' pinned' : ''}" data-drill-pin="${esc(id)}"
+          aria-pressed="${pinned}"
+          aria-label="${pinned ? 'Unpin — this will close automatically when you open another section' : 'Pin open — keep this section open when you open another'}"
+          title="${pinned ? 'Pinned open' : 'Pin open'}">📌</button>
+      </div>
+      <div class="drill-body" data-drill-body="${esc(id)}" style="display:none;">${bodyHtml}</div>
+    </div>`;
+}
+
+function setDrillOpen(id, open) {
+  const toggle = document.querySelector(`[data-drill-toggle="${id}"]`);
+  const body = document.querySelector(`[data-drill-body="${id}"]`);
+  if (!toggle || !body) return;
+  body.style.display = open ? 'block' : 'none';
+  toggle.setAttribute('aria-expanded', String(open));
+  if (open) uiState.openDrills.add(id); else uiState.openDrills.delete(id);
+}
+
+function togglePin(id) {
+  const pinned = !uiState.pinnedDrills.has(id);
+  if (pinned) uiState.pinnedDrills.add(id); else uiState.pinnedDrills.delete(id);
+  const pinBtn = document.querySelector(`[data-drill-pin="${id}"]`);
+  if (pinBtn) {
+    pinBtn.classList.toggle('pinned', pinned);
+    pinBtn.setAttribute('aria-pressed', String(pinned));
+    pinBtn.setAttribute('aria-label', pinned
+      ? 'Unpin — this will close automatically when you open another section'
+      : 'Pin open — keep this section open when you open another');
+    pinBtn.title = pinned ? 'Pinned open' : 'Pin open';
+  }
+  return pinned;
+}
+
+function toggleDrill(id) {
+  const opening = !uiState.openDrills.has(id);
+  if (opening) {
+    for (const otherId of Array.from(uiState.openDrills)) {
+      if (otherId !== id && !uiState.pinnedDrills.has(otherId)) setDrillOpen(otherId, false);
+    }
+  }
+  setDrillOpen(id, opening);
+}
+
+// Reattaches handlers + reapplies open/pinned state after a re-render.
+// Safe to call when the drill doesn't exist on this card (e.g. an action
+// card with no steps, or a brief with no full_text) — every lookup is
+// null-checked.
+function wireDrill(div, id) {
+  const toggle = div.querySelector(`[data-drill-toggle="${id}"]`);
+  const pinBtn = div.querySelector(`[data-drill-pin="${id}"]`);
+  if (!toggle) return;
+  if (uiState.openDrills.has(id)) setDrillOpen(id, true);
+  toggle.onclick = (e) => {
+    const wantsKeepOpen = e.shiftKey || e.metaKey || e.ctrlKey;
+    if (wantsKeepOpen) {
+      if (!uiState.pinnedDrills.has(id)) togglePin(id);
+      if (!uiState.openDrills.has(id)) setDrillOpen(id, true);
+    } else {
+      toggleDrill(id);
+    }
+  };
+  if (pinBtn) {
+    pinBtn.onclick = (e) => {
+      e.stopPropagation();
+      const pinned = togglePin(id);
+      if (pinned && !uiState.openDrills.has(id)) setDrillOpen(id, true);
+    };
+  }
+}
+
+function stepsAccordion(cardId, rawSteps, stepState, stepActions) {
   const items = parseSteps(rawSteps);
   if (!items.length) return '';
   stepState = stepState || {};
@@ -510,13 +626,34 @@ function stepsAccordion(rawSteps, stepState, stepActions) {
     </li>`;
   }).join('');
   const hasActions = Array.isArray(stepActions) && stepActions.some(Boolean);
-  return `
-    <div class="steps-accordion">
-      <button class="steps-toggle" data-action="toggle-steps" aria-expanded="false">${hasActions ? 'Steps & actions' : 'Steps'} (${items.length})</button>
-      <div class="steps-body" style="display:none;">
-        <ul class="steps-list">${list}</ul>
-      </div>
-    </div>`;
+  const label = `${hasActions ? 'Steps & actions' : 'Steps'} (${items.length})`;
+  return drillMarkup(`steps:${cardId}`, label, `<ul class="steps-list">${list}</ul>`);
+}
+
+// One-time discoverability hint for the pin (Mike, 2026-08-13: multi-open
+// must be discoverable, not a hidden gesture). Shown until dismissed once;
+// dismissal persists in localStorage so it doesn't nag every visit.
+function renderDrillHint(main) {
+  if (uiState.drillHintDismissed) return;
+  const el = document.createElement('div');
+  el.className = 'drill-hint';
+  el.innerHTML = `<span>Tip: opening a section closes others. Tap 📌 (or hold ⇧/⌘ and click) to keep more than one open.</span>
+    <button type="button" data-action="dismiss-drill-hint">Got it</button>`;
+  el.querySelector('[data-action="dismiss-drill-hint"]').onclick = () => {
+    uiState.drillHintDismissed = true;
+    try { localStorage.setItem('pulse_drill_hint_dismissed', '1'); } catch (_) {}
+    el.remove();
+  };
+  main.appendChild(el);
+}
+
+// The roundup's own drill-down: a brief card shows a short, always-visible
+// digest (payload.lines, ~2-second scan) and, only if the producer supplied
+// one, the complete fleet-record body behind this collapsed-by-default
+// panel — never dumped inline (Mike, 2026-08-13: "still very wordy").
+function briefDrill(cardId, fullText) {
+  if (!fullText || !fullText.trim()) return '';
+  return drillMarkup(`brief:${cardId}`, 'Full brief', `<div class="drill-fulltext">${esc(fullText)}</div>`);
 }
 
 // Poll a single mac_commands row until it leaves status='open'. open_session
@@ -597,20 +734,7 @@ async function persistStepState(cardId, idx, value) {
 }
 
 function wireSteps(div, c) {
-  const toggle = div.querySelector('[data-action="toggle-steps"]');
-  const body = div.querySelector('.steps-body');
-  if (toggle && body) {
-    if (uiState.openSteps.has(c.id)) {
-      body.style.display = 'block';
-      toggle.setAttribute('aria-expanded', 'true');
-    }
-    toggle.onclick = () => {
-      const open = body.style.display !== 'none';
-      body.style.display = open ? 'none' : 'block';
-      toggle.setAttribute('aria-expanded', String(!open));
-      if (open) uiState.openSteps.delete(c.id); else uiState.openSteps.add(c.id);
-    };
-  }
+  wireDrill(div, `steps:${c.id}`);
   div.querySelectorAll('.step-item input.step-check').forEach(cb => {
     cb.onchange = async () => {
       const li = cb.closest('.step-item');
@@ -1201,7 +1325,7 @@ function renderCard(c) {
       </div>
       ${p.why ? `<p class="why">${esc(p.why)}</p>` : ''}
       ${cardActionsPanel(c)}
-      ${stepsAccordion(p.steps, c.step_state, p.step_actions)}
+      ${stepsAccordion(c.id, p.steps, c.step_state, p.step_actions)}
       <div class="actions">
         ${p.url ? `<button class="btn-primary" data-action="open">Open</button>` : ''}
         ${p.url ? `<button class="btn-secondary" data-action="preview">Preview</button>` : ''}
@@ -1237,9 +1361,13 @@ function renderCard(c) {
       </div>
       <input class="textresp" style="display:none" placeholder="Your answer..." />`;
   } else if (c.type === 'brief') {
+    // Short digest always visible (~2-second scan); full text, if the
+    // producer supplied one, sits behind briefDrill()'s collapsed-by-
+    // default panel — never dumped inline (Mike, 2026-08-13).
     body = `
       <p class="title">${esc(stripEscalationBanner(p.title) || 'Daily brief')}${escalationBadge(c)}</p>
       <p class="body-text">${esc(p.lines || '')}</p>
+      ${briefDrill(c.id, p.full_text)}
       <div class="actions">
         <button class="btn-secondary" data-action="ack">Ack</button>
         <button class="btn-secondary" data-action="snooze">Snooze</button>
@@ -1282,6 +1410,7 @@ function renderCard(c) {
   wireSteps(div, c);
   wireTypedCardActions(div, c);
   wireComments(div, c);
+  if (c.type === 'brief') wireDrill(div, `brief:${c.id}`);
   return div;
 }
 
@@ -1447,6 +1576,7 @@ async function loadLegacyCards() {
   if (!open.length) {
     main.innerHTML = '<div class="empty">Nothing open right now.</div>';
   } else {
+    renderDrillHint(main);
     open.forEach(c => main.appendChild(renderCard(c)));
   }
   if (snoozed.length) {

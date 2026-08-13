@@ -51,10 +51,17 @@ import sys
 import urllib.parse
 import urllib.request
 
+# The card contract lives beside this script as an importable module so the
+# other writer to this board (_estate/bin/pulse-enqueue) enforces the identical
+# rules instead of being an unvalidated side door. Insert explicitly: this file
+# is also loaded via runpy.run_path() by test/test_pulse_push_actions.py, which
+# does not put the script's directory on sys.path.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from pulse_card_contract import CardContractError, validate_payload  # noqa: E402
+
 DEFAULT_URL = "https://omfwcodoimjmbrhssvfl.supabase.co"
 APP_ID = "pulse-zero"
 BOARD_INBOX = os.path.expanduser("~/Projects/SOMA/board/inbox")
-TITLE_MAX = 60
 STEP_ACTION_COMMANDS = {
     "open_url",
     "open_session",
@@ -80,12 +87,6 @@ QUEUE_SUPPORTED_OPERATIONS = {
     },
 }
 
-# Weak signal words that suggest a title is descriptive, not imperative
-# ("Approve the deploy" is imperative; "Deploy approval needed" is not).
-NON_IMPERATIVE_STARTS = (
-    "the ", "a ", "an ", "this ", "there ", "it ", "i ", "we ",
-)
-
 
 def sb_request(method, path, key, url, body=None, params=None):
     full = f"{url}/rest/v1/{path}"
@@ -106,31 +107,20 @@ def sb_request(method, path, key, url, body=None, params=None):
         sys.exit(1)
 
 
-def validate_action_title(title):
-    """Enforce the card contract on action titles. Exits on hard failure,
-    warns (stderr) on soft issues. Returns nothing."""
-    if not title or not title.strip():
-        sys.stderr.write("error: --title is required and cannot be blank\n")
+def enforce_contract(card_type, payload):
+    """Run the shared card contract over the payload that is about to be
+    written. Hard violations exit non-zero naming the rule and the board
+    standard; soft issues go to stderr as warnings and the push continues.
+
+    The rules themselves live in pulse_card_contract so _estate/bin/pulse-enqueue
+    enforces exactly the same ones at enqueue time."""
+    try:
+        warnings = validate_payload(card_type, payload)
+    except CardContractError as e:
+        sys.stderr.write(f"error: {e}\n")
         sys.exit(1)
-    if len(title) > TITLE_MAX:
-        sys.stderr.write(
-            f"error: --title is {len(title)} chars, max is {TITLE_MAX}.\n"
-            f"  Board standard: one imperative line, not an essay.\n"
-            f"  Got: {title!r}\n"
-            f"  Trim it — put detail in --steps or --why instead.\n"
-        )
-        sys.exit(1)
-    stripped = title.strip().lower()
-    if stripped.endswith("?"):
-        sys.stderr.write(
-            f"warn: --title reads as a question, not an imperative: {title!r}\n"
-            f"  Example of a passing title: 'Approve the Netlify deploy'\n"
-        )
-    elif any(stripped.startswith(w) for w in NON_IMPERATIVE_STARTS):
-        sys.stderr.write(
-            f"warn: --title may not be imperative (starts with '{stripped.split()[0]}'): {title!r}\n"
-            f"  Example of a passing title: 'Approve the Netlify deploy'\n"
-        )
+    for w in warnings:
+        sys.stderr.write(f"warn: {w}\n")
 
 
 def parse_step_actions(raw, steps):
@@ -476,7 +466,6 @@ def push(args, key, url):
     payload = {}
     ctype = args.type
     if ctype == "action":
-        validate_action_title(args.title)
         payload = {"title": args.title, "why": args.why or "", "steps": args.steps, "url": args.url}
         step_actions_raw = getattr(args, "step_actions", None)
         card_actions_raw = getattr(args, "actions", None)
@@ -491,15 +480,6 @@ def push(args, key, url):
         if card_actions_raw:
             payload["actions_version"] = CARD_ACTIONS_VERSION
             payload["actions"] = parse_card_actions(card_actions_raw)
-        has_step_link = any(
-            action and action.get("command") == "open_url"
-            for action in payload.get("step_actions", [])
-            if isinstance(action, dict)
-        )
-        if not args.url and not has_step_link and not payload.get("actions"):
-            sys.stderr.write(
-                "warn: --url not set. Action cards without a deep link make Mike guess where to go.\n"
-            )
     elif ctype == "verdict":
         payload = {"artifact_name": args.artifact, "url": args.url, "summary": args.summary}
     elif ctype == "decision":
@@ -515,13 +495,18 @@ def push(args, key, url):
             payload["why"] = args.why
         if getattr(args, "url", None):
             payload["url"] = args.url
-        if not getattr(args, "why", None) and not getattr(args, "url", None):
-            sys.stderr.write(
-                "warn: decision card has neither --why nor --url. Mike has to ask for "
-                "the context, which is the slow path this card type exists to avoid.\n"
-            )
     elif ctype == "brief":
         payload = {"title": args.title, "lines": args.lines}
+        # --full-text (2026-08-13): the complete fleet-record body, rendered
+        # collapsed-by-default behind a drill-down. --lines stays the short,
+        # always-visible digest (~2-second scan) — see README "Board
+        # standard" and SOMA/pulse/USEFULNESS-2026-08-11.md's modality map
+        # ("Brief/FYI: 3-line digest ... md file = fleet record").
+        if getattr(args, "full_text", None):
+            payload["full_text"] = args.full_text
+
+    # One enforcement point, shared with _estate/bin/pulse-enqueue.
+    enforce_contract(ctype, payload)
 
     dedupe_key = getattr(args, "key", None)
     source = args.source or "unknown"
@@ -872,7 +857,8 @@ def main():
 
     b = sub.add_parser("brief")
     b.add_argument("--title", required=True)
-    b.add_argument("--lines", required=True)
+    b.add_argument("--lines", required=True, help="short, always-visible digest (~2-second scan)")
+    b.add_argument("--full-text", dest="full_text", help="optional: full body, rendered collapsed behind a drill-down")
     b.add_argument("--source")
     b.add_argument("--key", help="stable dedup key — replaces any existing OPEN card with the same key instead of inserting a new one")
 

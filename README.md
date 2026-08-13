@@ -43,6 +43,24 @@ from a verified executor receipt, not a manually checked instruction.
 `--step-actions` remain for single static destinations and legacy-card
 compatibility, not as the default executable handoff.
 
+**No link surface, no card (hard gate, 2026-08-13).** An `action` card with
+no `--url`, no `--step-actions open_url` step, and no `--actions` is now a
+hard `CardContractError` from `pulse_card_contract.validate_payload()` —
+previously this was a stderr warning every caller printed and ignored.
+Every producer that goes through the contract (`pulse-push` directly,
+`_estate/bin/pulse-morning`, `_estate/bin/pulse-drain`, and
+`_estate/bin/pulse-enqueue` at enqueue time) inherits the refusal
+automatically; a raw REST write is still the only way around it (see
+`pulse-board-truth`, which audits for exactly that gap read-only). If a
+producer has no real affordance for an item yet, that's the signal the item
+isn't board-ready — keep it as informational text (a brief's `--lines` /
+`--full-text`) until it has one, per Mike's instruction: "say so explicitly
+rather than emitting prose." (Live violation that prompted this:
+`coo-briefing-run.sh` had minted a `--title`/`--why`-only action card from
+every "Needs Mike" bullet since WQ-288 — every one of them was, by
+construction, unable to carry a link. That minting path is retired; see
+`_estate/bin/coo-briefing-format.py`.)
+
 **One card = one decision (Mike, 2026-08-11).** A card is one specific turn
 needing one action — never a paragraph Mike must parse into two mental
 decisions. "Should we kill/keep X *and* Y" is **two** cards with two `--key`s,
@@ -108,7 +126,18 @@ bin/pulse-push action   --title "Approve X" --why "..." --steps "1. ...\n2. ..."
 bin/pulse-push verdict  --artifact "Momentum v0" --url "https://momentum-demo-esr.netlify.app" --summary "..." --source dee --key "momentum-v0-verdict"
 bin/pulse-push decision --question "Ship A or B?" --options "A,B,Other" --why "Context so Mike can decide here." --url "https://..." --source dee --key "ship-a-or-b"
 bin/pulse-push brief    --title "Estate brief 2026-07-16" --lines "Line1\nLine2\nLine3" --source dee --key "estate-brief-2026-07-16"
+bin/pulse-push brief    --title "Fleet digest" --lines "Short 3-5 line digest" --full-text "The complete body, as long as it needs to be" --source dee --key "..."
 ```
+
+**`--lines` vs `--full-text` (brief, 2026-08-13).** `--lines` is the only
+field Mike sees without tapping anything — keep it to a handful of short
+lines, scannable in about two seconds (Mike: "still very wordy"). `--full-text`
+is optional and, when present, renders behind the board's collapsed-by-default
+"Full brief" drill-down — the long form nothing is thrown away, it's one tap
+away instead of dumped on the card face. `_estate/bin/coo-briefing-format.py`
+is the reference implementation: it turns a ~100-line fleet-briefing markdown
+file into a ~5-line digest for `--lines` and the complete markdown-stripped
+body for `--full-text`.
 
 **Always pass `--key` for anything a session might push more than once** (a retry, a
 recurring nightly job, a card re-pushed after a code change). `--key` is a stable dedup
@@ -330,6 +359,35 @@ Legacy checklist rows may still carry a compact step-action button. Labels
 describe the actual outcome (`Open Gemini API Keys`, `Install & verify`)
 rather than the transport. Credential cards must say that secrets stay on
 the Mac clipboard and must never be pasted into Pulse chat.
+
+### Drill-down accordions (2026-08-13)
+
+Every collapsed-by-default detail panel on the board — an action card's
+"Steps & actions", a brief's "Full brief" — shares one mechanism
+(`drillMarkup`/`toggleDrill`/`togglePin` in `public/index.html`). Default:
+opening one closes every other **open, unpinned** drill (Mike: "if I open up
+one accordion, it closes the other"). To keep more than one open:
+
+- **Touch** — tap the 📌 next to any drill's toggle. This is the primary,
+  always-visible affordance (there is no Shift key on a phone, and Mike
+  reads this board there); a one-time dismissible tip banner names it the
+  first time a card list renders one.
+- **Desktop** — hold Shift, Cmd, or Ctrl while clicking (or pressing Enter
+  on) the drill's header. This pins it in the same action as opening it —
+  no separate "just this once" mode to remember. A keyboard-activated
+  `<button>` click carries the modifier state of the key that triggered it,
+  so Shift+Enter / Cmd+Enter work through the same handler with no extra
+  code.
+
+`aria-expanded` on the toggle and `aria-pressed`/`aria-label` on the pin stay
+correct through both paths; both are real `<button>` elements sized to the
+≥44px touch-target floor via padding (the visual box stays compact-link-
+sized — see `.drill-toggle`/`.drill-pin` CSS). Scope note: this unifies
+in-card content drill-downs only (steps, brief full-text) — the board's
+history disclosures (Snoozed / Recently done / Bounced) are native
+`<details>` and stay independent; they're navigation between different
+card populations, not alternate views of the same item, so auto-closing one
+when you open another would be surprising rather than tidy.
 
 `renderApp()` may run more than once during Supabase's initial auth event.
 The realtime channel is therefore created once and explicitly removed on
