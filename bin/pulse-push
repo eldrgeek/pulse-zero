@@ -517,7 +517,18 @@ def push(args, key, url):
     enforce_contract(ctype, payload)
 
     dedupe_key = getattr(args, "key", None)
-    source = args.source or "unknown"
+    # Attribution chain (Tower escalation 2026-08-13: 3 unattributed cards in one
+    # hour — an unattributed card breaks Duty C outright, since Mike's answer has
+    # no poster to travel back to): --source, else $PULSE_SOURCE (dispatch briefs
+    # can export it once), else a loud warning + "unknown". Not a hard refusal —
+    # a card Mike needs must never be lost to bookkeeping — but the warning makes
+    # the omission visible in every worker log instead of silent.
+    source = args.source or os.environ.get("PULSE_SOURCE") or "unknown"
+    if source == "unknown":
+        sys.stderr.write(
+            "warn: card pushed with created_by='unknown' — pass --source or set "
+            "PULSE_SOURCE; unattributed cards strand Mike's answers (no poster "
+            "to notify).\n")
 
     row = {
         "app_id": APP_ID,
