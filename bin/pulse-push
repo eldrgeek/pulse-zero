@@ -485,7 +485,15 @@ def push(args, key, url):
     elif ctype == "decision":
         payload = {
             "question": args.question,
-            "options": [o.strip() for o in (args.options or "").split(",") if o.strip()],
+            # '|' when present, else ',' — so an option may contain a comma and
+            # every existing caller still works. 2026-08-13: comma-only splitting
+            # shattered live card c76afce9 (the Mark/James corpus split, a question
+            # about other people's privacy) into 5 buttons from 3, because one
+            # option was itself a three-part answer. Same fix applied in
+            # _estate/bin/pulse-enqueue:split_options() so the two cannot drift.
+            "options": [o.strip() for o in
+                        (args.options or "").split("|" if "|" in (args.options or "") else ",")
+                        if o.strip()],
         }
         # --why / --url (2026-07-29): a decision card used to carry the question and
         # nothing else, so Mike had to ask the posting session for context and wait on
