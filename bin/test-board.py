@@ -699,23 +699,12 @@ def main():
         else:
             fail("hostile body: long unbroken URL does not widen the page", str(hostile_state))
 
-        # UX#5: touch-target floor on every visible primary/secondary button
-        # and the comment-toggle link.
-        touch_state = tab.eval("""(() => {
-            const els = [...document.querySelectorAll(
-                '.card:not(.answered) .btn-primary, .card:not(.answered) .btn-secondary, ' +
-                '.card:not(.answered) .btn-destructive, .card:not(.answered) .comment-toggle'
-            )];
-            const under = els.filter(el => el.getBoundingClientRect().height < 44)
-                .map(el => ({ text: el.textContent.trim().slice(0, 30), h: el.getBoundingClientRect().height }));
-            return { total: els.length, under };
-        })()""")
-        if touch_state and touch_state["total"] > 0 and not touch_state["under"]:
-            ok(f"touch targets >= 44px on all {touch_state['total']} visible card buttons/comment-toggle")
-        else:
-            fail("touch targets >= 44px on all visible card buttons/comment-toggle", str(touch_state))
-
         # UX#1: feedback chip must not overlap any visible card's action row.
+        # Runs BEFORE the touch-target check below, which opens every comment
+        # thread — that reflows every card's height and would otherwise make
+        # a DIFFERENT card's button land under the chip, testing a state
+        # nobody reported. This must reflect the actual reported repro: the
+        # board's ordinary default (closed-threads) resting state.
         overlap_state = tab.eval("""(() => {
             const chip = document.querySelector('.soma-feedback-root');
             if (!chip) return null;
@@ -735,6 +724,28 @@ def main():
             ok("feedback chip does not overlap any visible card action button", str(overlap_state["chip"]))
         else:
             fail("feedback chip does not overlap any visible card action button", str(overlap_state))
+
+        # UX#5: touch-target floor on every visible primary/secondary button
+        # and the comment-toggle link. Runs AFTER the overlap check on
+        # purpose — see the comment above.
+        touch_state = tab.eval("""(() => {
+            // Open every comment thread first so .comment-input-row's Send
+            // button is actually laid out, not display:none — its real
+            // height must be checked too, not skipped as "hidden".
+            document.querySelectorAll('.card:not(.answered) [data-action="toggle-comments"]')
+                .forEach(t => { if (t.nextElementSibling?.style.display === 'none') t.click(); });
+            const els = [...document.querySelectorAll(
+                '.card:not(.answered) .btn-primary, .card:not(.answered) .btn-secondary, ' +
+                '.card:not(.answered) .btn-destructive, .card:not(.answered) .comment-toggle'
+            )].filter(el => el.offsetParent !== null);  // skip anything still collapsed/hidden
+            const under = els.filter(el => el.getBoundingClientRect().height < 44)
+                .map(el => ({ text: el.textContent.trim().slice(0, 30), h: el.getBoundingClientRect().height }));
+            return { total: els.length, under };
+        })()""")
+        if touch_state and touch_state["total"] > 0 and not touch_state["under"]:
+            ok(f"touch targets >= 44px on all {touch_state['total']} visible card buttons/comment-toggle")
+        else:
+            fail("touch targets >= 44px on all visible card buttons/comment-toggle", str(touch_state))
 
         # CODE#9: an in-progress comment draft must survive a realtime-style
         # full re-render (loadCards()), not just persist because nothing
