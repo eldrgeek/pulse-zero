@@ -288,8 +288,34 @@ def validate_payload(card_type, payload, title_max=TITLE_MAX):
     warnings = []
     if card_type == "action":
         warnings += validate_title(payload.get("title"), title_max=title_max)
+        # Any step-action command is a real affordance, not just open_url.
+        #
+        # 2026-08-13 (Tower): this used to test `command == "open_url"` alone,
+        # which made the gate reject cards whose button was BETTER than a link.
+        # It silently broke the estate's own alarm of last resort. The
+        # tower-watchdog "Tower is down — start it by hand" card carries a
+        # consent-gated `open_session` button (opens a Claude Desktop task and
+        # injects the respawn prompt on Mike's click). From the moment this
+        # gate landed (7ad33ba, 07:56 EDT) every attempt to file that card
+        # failed with no_link_surface — and because push_action_card redirects
+        # all output to /tmp/tower-watchdog-pulse.log with `>`, the error was
+        # invisible. Tower then died at 17:23Z and stayed dark 9.7h while the
+        # watchdog correctly detected it, correctly refused an unsafe respawn,
+        # and could not tell anyone. Mike found out by asking.
+        #
+        # The gate's intent is right: an action card must give Mike something
+        # to DO. But `open_url`, `open_session`, `clipboard_set` and
+        # `clipboard_take_and_deploy` are ALL things to do — they are exactly
+        # the set this codebase already validates in STEP_ACTION_COMMANDS.
+        # Recognising one of the four was a false negative, and a hardening
+        # rule that disarms the safety net is worse than the prose it was
+        # written to stop.
+        STEP_LINK_COMMANDS = {
+            "open_url", "open_session", "clipboard_set",
+            "clipboard_take_and_deploy",
+        }
         has_step_link = any(
-            isinstance(a, dict) and a.get("command") == "open_url"
+            isinstance(a, dict) and a.get("command") in STEP_LINK_COMMANDS
             for a in (payload.get("step_actions") or [])
         )
         has_link_surface = is_present(payload.get("url")) or has_step_link \
