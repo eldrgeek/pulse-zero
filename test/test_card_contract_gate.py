@@ -51,6 +51,62 @@ class ActionLinkSurfaceGate(unittest.TestCase):
             pcc.validate_payload("action", {"title": "Do the thing", "url": "   "})
 
 
+class UrlSchemeGate(unittest.TestCase):
+    """CODE#4 (2026-08-14, fix wave): javascript:/data:/other-scheme URLs must
+    be refused at the contract layer, not just at render time."""
+
+    def test_javascript_scheme_is_rejected(self):
+        with self.assertRaises(pcc.CardContractError) as ctx:
+            pcc.validate_payload(
+                "action",
+                {"title": "Open the thing", "url": "javascript:alert(1)"},
+            )
+        self.assertEqual(ctx.exception.rule, "unsafe_url_scheme")
+
+    def test_data_scheme_is_rejected(self):
+        with self.assertRaises(pcc.CardContractError) as ctx:
+            pcc.validate_payload(
+                "verdict",
+                {"artifact_name": "X", "summary": "Y",
+                 "url": "data:text/html,<script>alert(1)</script>"},
+            )
+        self.assertEqual(ctx.exception.rule, "unsafe_url_scheme")
+
+    def test_https_scheme_is_accepted(self):
+        warnings = pcc.validate_payload(
+            "decision",
+            {"question": "Pick one?", "options": ["A", "B"], "url": "https://example.test"},
+        )
+        self.assertEqual(warnings, [])
+
+    def test_http_scheme_is_accepted(self):
+        warnings = pcc.validate_payload(
+            "action", {"title": "Open the thing", "url": "http://example.test"}
+        )
+        self.assertEqual(warnings, [])
+
+    def test_missing_url_is_not_a_scheme_violation(self):
+        # Absence is validate_required_fields'/the link-surface gate's job;
+        # this gate must not fire on a card that has no url at all.
+        with self.assertRaises(pcc.CardContractError) as ctx:
+            pcc.validate_payload("action", {"title": "Approve X", "actions": []})
+        self.assertNotEqual(ctx.exception.rule, "unsafe_url_scheme")
+
+
+class DecisionOptionsUncapped(unittest.TestCase):
+    """UX finding (2026-08-14): the board used to hard-slice decision options
+    to 4 with no on-card signal. It now renders all of them; the contract
+    should warn (not reject) on a long list, and never claim they're dropped."""
+
+    def test_more_than_four_options_warns_but_does_not_reject(self):
+        warnings = pcc.validate_payload(
+            "decision",
+            {"question": "Pick one?", "options": ["A", "B", "C", "D", "E", "F"]},
+        )
+        self.assertTrue(any("options" in w for w in warnings))
+        self.assertFalse(any("invisible" in w for w in warnings))
+
+
 class BriefFullText(unittest.TestCase):
     def test_full_text_is_optional_and_additive(self):
         warnings = pcc.validate_payload(

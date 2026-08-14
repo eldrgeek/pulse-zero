@@ -6,14 +6,13 @@
 <title>Pulse Zero</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="/pulse-actions.js"></script>
-<script src="/pulse-queue.js"></script>
 <link rel="stylesheet" href="/vendor/soma-feedback/soma-feedback.css">
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
   body {
     margin: 0; font-family: -apple-system, system-ui, sans-serif;
-    background: #0b0d10; color: #f0f2f4; min-height: 100vh;
+    background: #0b0d10; color: #f0f2f4; min-height: 100vh; min-height: 100dvh;
   }
   @media (prefers-color-scheme: light) {
     body { background: #f4f5f7; color: #14171a; }
@@ -34,29 +33,6 @@
     background: #16181b; border: 1px solid #26292d; border-radius: 14px;
     padding: 16px; margin-bottom: 12px; animation: in 0.2s ease;
   }
-  .queue-card-shell { margin-bottom: 12px; }
-  .queue-card-shell > .card { margin-bottom: 0; }
-  .queue-card-summary {
-    list-style: none; cursor: pointer; padding: 13px 15px; border: 1px solid #26292d;
-    border-radius: 14px; background: #16181b; font-weight: 650;
-  }
-  .queue-card-summary::-webkit-details-marker { display: none; }
-  .queue-card-shell[open] > .queue-card-summary { border-radius: 14px 14px 0 0; }
-  .queue-card-shell[open] > .card { border-radius: 0 0 14px 14px; border-top: 0; }
-  .queue-meta { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 10px; align-items: center; }
-  .queue-rank, .queue-gate, .queue-state {
-    font-size: 11px; font-weight: 750; padding: 3px 8px; border-radius: 999px;
-    background: #22262b; color: #cfd5dc;
-  }
-  .queue-rank { background: #243456; color: #9dc0ff; }
-  .queue-state.your_turn { background: #4a3412; color: #ffd277; }
-  .queue-state.cleared { background: #12302e; color: #4ecdc4; }
-  .queue-why-now, .queue-only-mike { margin: 7px 0; font-size: 13px; line-height: 1.45; }
-  .queue-why-now strong { color: #e8b545; }
-  @media (prefers-color-scheme: light) {
-    .queue-card-summary { background: #fff; border-color: #e3e5e8; }
-    .queue-rank, .queue-gate, .queue-state { background: #edf0f4; color: #38414b; }
-  }
   @media (prefers-color-scheme: light) {
     .card { background: #fff; border-color: #e3e5e8; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
   }
@@ -76,6 +52,13 @@
   }
   .title { font-size: 16.5px; font-weight: 620; margin: 0 0 4px; line-height: 1.3; }
   .why, .body-text { font-size: 14px; opacity: 0.75; margin: 0 0 10px; line-height: 1.45; white-space: pre-wrap; }
+  /* overflow-wrap:anywhere (UX#2b, 2026-08-14) — additive-only (does not
+     redeclare font-size/opacity/margin, which would fight the earlier
+     .drill-fulltext rule under equal-specificity cascade order): a blanket
+     safety net so one unbreakable token (a long URL/hash/token with no
+     auto-link match) can never again widen the whole page past the viewport,
+     regardless of whether renderInlineText()'s auto-linkifier caught it. */
+  .why, .body-text, .drill-fulltext { overflow-wrap: anywhere; }
   a.link { color: #6ea8fe; word-break: break-all; }
   /* Unified drill-down accordion (steps + brief full-text). Default:
      opening one closes every other open, unpinned drill (Mike, 2026-08-13).
@@ -111,6 +94,7 @@
   .step-item.checked span { text-decoration: line-through; opacity: 0.55; }
   .step-item { flex-wrap: wrap; }
   .step-item label { flex: 1 1 auto; min-width: 0; }
+  .step-item label span { overflow-wrap: anywhere; }
   .step-action-btn {
     flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
     font: inherit; font-size: 12.5px; font-weight: 650; padding: 7px 12px; border-radius: 8px;
@@ -154,6 +138,12 @@
     font: inherit; font-size: 14px; font-weight: 600; padding: 10px 16px; border-radius: 10px;
     border: none; cursor: pointer; -webkit-tap-highlight-color: transparent;
   }
+  /* Touch-target floor (UX#5, 2026-08-14): a live sweep at 412x915 found
+     every Open/Preview/Ask Pulse/Done/Snooze/Not mine/Ack button measuring
+     37px tall — under the 44px floor every other control on this board
+     (drill-toggle, step-action-btn, card-action-btn) already meets. Padding
+     bump only; keeps the same visual density everywhere else. */
+  .btn-primary, .btn-secondary, .btn-destructive { min-height: 44px; padding: 12px 16px; }
   .btn-primary { background: #2f6fed; color: white; }
   .btn-secondary { background: #26292d; color: #e8eaed; }
   @media (prefers-color-scheme: light) { .btn-secondary { background: #eceef1; color: #14171a; } }
@@ -201,9 +191,18 @@
   .comment-item .who { opacity: 0.55; font-size: 12px; margin-right: 6px; }
   .comment-pending { font-size: 13px; font-style: italic; margin: 4px 0; animation: pending-pulse 1.4s ease-in-out infinite; }
   @keyframes pending-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.85; } }
-  .comment-toggle { background: none; border: none; padding: 0; font-size: 13px; font-weight: 600; opacity: 0.7; cursor: pointer; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+  /* UX#5: this was the sole entry point to the comment thread, styled as a
+     bare 16px-tall text link — same touch-target-floor trick already used by
+     .drill-toggle (padding expands the tap target; negative margin keeps the
+     visible box the same compact underlined-link look). */
+  .comment-toggle {
+    background: none; border: none; padding: 12px 4px; margin: -12px 0 -12px -4px;
+    font-size: 13px; font-weight: 600; opacity: 0.7; cursor: pointer; color: inherit;
+    text-decoration: underline; text-underline-offset: 2px; min-height: 44px;
+    display: inline-flex; align-items: center;
+  }
   .comment-input-row { display: flex; gap: 8px; margin-top: 8px; }
-  .comment-input-row input { flex: 1; }
+  .comment-input-row textarea { flex: 1; resize: vertical; min-height: 44px; font-family: inherit; }
   .overlay-backdrop {
     position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 50;
     display: flex; align-items: center; justify-content: center; padding: 20px;
@@ -218,7 +217,7 @@
   .overlay-box li { margin-bottom: 6px; }
   .overlay-close { width: 100%; background: #26292d; color: #e8eaed; padding: 10px; border-radius: 10px; }
   @media (prefers-color-scheme: light) { .overlay-close { background: #eceef1; color: #14171a; } }
-  .login { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
+  .login { display: flex; align-items: center; justify-content: center; min-height: 100vh; min-height: 100dvh; padding: 24px; }
   .login-box { max-width: 360px; width: 100%; text-align: center; }
   .login-box input { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #35383d; background: #16181b; color: #f0f2f4; font-size: 15px; margin: 16px 0 10px; }
   @media (prefers-color-scheme: light) {
@@ -238,7 +237,17 @@
   .muted { opacity: 0.55; font-size: 13px; }
   /* soma-feedback chip (§8) sits bottom-left by default; nudge it above the
      persistent #talk-bar so the two don't overlap. */
-  .soma-feedback-root { bottom: 82px; }
+  /* UX#1 (2026-08-14): bottom-LEFT (the vendor default) put the chip
+     directly on top of the board's own left-anchored card action rows —
+     confirmed live: the chip fully occluded the second card's Snooze button
+     on first load, no scrolling needed (feedback root x:8 vs Snooze
+     x:29-110 — same horizontal band). Moving to bottom-RIGHT clears the
+     zone every card action row starts from; the panel flips to open
+     right-anchored to match (both overridden here, in page CSS which loads
+     after the vendor stylesheet, so this cascade wins without forking the
+     shared vendor file other SOMA apps still use bottom-left). */
+  .soma-feedback-root { bottom: 82px; left: auto; right: 12px; }
+  .soma-feedback-panel { left: auto; right: 0; }
 
   /* ── Talk bar (persistent bottom bar) ─────────────────────── */
   #talk-bar {
@@ -313,7 +322,6 @@ const SUPABASE_URL = 'https://omfwcodoimjmbrhssvfl.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_vi2qDWjozUJ5mi9dwirkLA_rj6UaqLf';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const APP_ID = 'pulse-zero';
-const QUEUE_V1_FLAG = new URLSearchParams(location.search).get('queue_v1') === '1';
 const app = document.getElementById('app');
 window.pulseSupabase = sb;
 window.pulseAuthenticated = false;
@@ -403,6 +411,46 @@ function safeHttpUrl(rawUrl) {
   }
 }
 
+// ── Minimal safe inline-text renderer (UX#2 + UX#4, composes with CODE#4) ──
+// Card body text (--why/--lines/--full_text) is worker-authored and currently
+// renders through esc() only, so markdown syntax (**bold**, _em_, `code`)
+// paints literally and a bare URL is un-linked plain text that can blow the
+// viewport width (UX#2 finding: 170px of page-wide overflow from one 110-char
+// URL). This adds a narrow, allowlisted subset — NEVER raw HTML passthrough.
+//
+// Safety invariant, load-bearing: every literal text run goes through esc()
+// before it touches innerHTML, exactly once, exactly here. The only markup
+// this function can ever emit is <strong>, <code>, <em>, and <a href=...> —
+// and every href is scheme-checked through safeHttpUrl() (the same function
+// CODE#4 uses for card-level links), so a payload like
+// "javascript:alert(1)" embedded as bare text never becomes a live link, and
+// "<img src=x onerror=alert(1)>" or "[a](javascript:...)" render as inert
+// escaped text, never as executable markup. Regex captures are matched
+// against the RAW (unescaped) source but every captured group is esc()'d
+// before insertion — so a capture can never itself contain an unescaped `<`.
+function renderInlineText(raw) {
+  const src = String(raw == null ? '' : raw);
+  const re = /(\*\*([^*\n]+)\*\*)|(`([^`\n]+)`)|(_([^_\n]+)_)|(https?:\/\/[^\s<>"')]+)/g;
+  let out = '';
+  let last = 0;
+  let m;
+  while ((m = re.exec(src))) {
+    out += esc(src.slice(last, m.index));
+    if (m[1]) out += `<strong>${esc(m[2])}</strong>`;
+    else if (m[3]) out += `<code>${esc(m[4])}</code>`;
+    else if (m[5]) out += `<em>${esc(m[6])}</em>`;
+    else if (m[7]) {
+      const href = safeHttpUrl(m[7]);
+      out += href
+        ? `<a class="link" href="${esc(href)}" target="_blank" rel="noopener">${esc(m[7])}</a>`
+        : esc(m[7]);
+    }
+    last = re.lastIndex;
+  }
+  out += esc(src.slice(last));
+  return out;
+}
+
 // Mike's on-Mac / off-Mac + comment-thread UI state that must survive a
 // loadCards() full re-render (realtime pulses on unrelated cards would
 // otherwise silently collapse an open comment thread mid-conversation).
@@ -416,12 +464,11 @@ const uiState = {
   drillHintDismissed: (() => { try { return localStorage.getItem('pulse_drill_hint_dismissed') === '1'; } catch (_) { return false; } })(),
   openComments: new Set(),   // card ids with the comment thread expanded
   pendingComment: new Map(), // card id -> ISO timestamp of Mike's last un-replied comment
+  commentDrafts: new Map(),  // card id -> in-progress, unsent comment text (CODE#9)
   actionRuns: new Map(),     // cardId:actionId:revision -> latest durable mac_commands run
   actionRunError: null,      // schema/RLS error shown on typed-action cards
   actionPollers: new Set(),  // command ids currently being polled across re-renders
   resolvingCards: new Set(), // typed cards currently being auto-resolved
-  continuationRuns: new Map(), // card id -> durable return-to-owner run
-  continuationPollers: new Set(),
 };
 let cardsChannel = null;
 let routedIdentity = null;
@@ -491,7 +538,7 @@ async function renderLogin() {
 
 function cardKindLabel(t) { return t.toUpperCase(); }
 
-const YESHIE_FLAG = !QUEUE_V1_FLAG && new URLSearchParams(location.search).get('yeshie') === '1';
+const YESHIE_FLAG = new URLSearchParams(location.search).get('yeshie') === '1';
 
 function showOverlay(html) {
   const backdrop = document.createElement('div');
@@ -882,28 +929,6 @@ async function maybeResolveTypedActionCard(c) {
   if (!allVerified) return;
   uiState.resolvingCards.add(c.id);
   try {
-    if (c.queue_state === 'queued') {
-      const verifiedRuns = parsed.actions
-        .map(action => typedActionRun(c, action))
-        .filter(run => PulseActions.runPhase(run) === 'verified');
-      const receipt = verifiedRuns[verifiedRuns.length - 1];
-      const { data, error } = await sb.rpc('start_pulse_continuation_v1', {
-        p_card_id: c.id,
-        p_command_id: receipt.id,
-      });
-      if (!error) {
-        const continuation = Array.isArray(data) ? data[0] : data;
-        if (continuation) uiState.continuationRuns.set(c.id, continuation);
-        if (continuation) pollContinuationRun(c.id, continuation.id);
-        loadCards();
-      } else {
-        refreshTypedActionRows(c, parsed.actions[parsed.actions.length - 1], {
-          status: 'failed',
-          result: { safe_message: 'The action verified, but Pulse could not resume the owner safely. Use Ask Pulse.' },
-        });
-      }
-      return;
-    }
     const { error } = await sb.from('pulse_cards').update({
       status: 'resolved',
       resolved_note: 'All requested actions completed with verified receipts.',
@@ -927,24 +952,20 @@ async function runTypedCardAction(c, action, btn) {
   if (existingPhase === 'verified') return;
 
   const attempt = PulseActions.nextAttempt(existing);
-  let run;
-  let error;
-  if (c.queue_state === 'queued') {
-    const result = await sb.rpc('enqueue_pulse_action', PulseActions.enqueueRpcArgs(c, action, attempt));
-    error = result.error;
-    run = Array.isArray(result.data) ? result.data[0] : result.data;
-  } else {
-    // Compatibility path for pre-queue typed cards. Queue v1 never sends a
-    // browser-authored action payload; this path can be retired after the
-    // migration window and direct authenticated INSERT permission is revoked.
-    const row = PulseActions.buildCommandRow(c, action, attempt);
-    const result = await sb.from('mac_commands').insert(row).select().single();
-    error = result.error;
-    run = result.data;
-    if (error && error.code === '23505') {
-      run = await fetchExistingTypedRun(row.idempotency_key);
-      error = null;
-    }
+  // CODE#5 (2026-08-14): this used to branch on c.queue_state === 'queued'
+  // and call an RPC (enqueue_pulse_action) that has never existed in the
+  // live database — queue v1 was authored (migration + this branch) but the
+  // migration was never applied, so that branch was unreachable dead code
+  // against production. Removed; the direct-INSERT path below (the one
+  // every real typed-action card has always actually used) is now the only
+  // path.
+  const row = PulseActions.buildCommandRow(c, action, attempt);
+  const result = await sb.from('mac_commands').insert(row).select().single();
+  let error = result.error;
+  let run = result.data;
+  if (error && error.code === '23505') {
+    run = await fetchExistingTypedRun(row.idempotency_key);
+    error = null;
   }
   if (error) {
     refreshTypedActionRows(c, action, {
@@ -963,42 +984,6 @@ async function runTypedCardAction(c, action, btn) {
   uiState.actionRuns.set(PulseActions.actionRunKey(c.id, action), run);
   refreshTypedActionRows(c, action, run);
   await pollTypedActionCommand(c, action, run.id);
-}
-
-async function loadContinuationRuns(cards) {
-  uiState.continuationRuns = new Map();
-  const ids = (cards || []).map(card => card.id);
-  if (!ids.length) return;
-  const { data } = await sb.from('pulse_continuation_runs')
-    .select('id,card_id,status,safe_message,verification_summary,created_at,updated_at')
-    .in('card_id', ids)
-    .order('created_at', { ascending: false });
-  for (const run of data || []) {
-    if (!uiState.continuationRuns.has(run.card_id)) uiState.continuationRuns.set(run.card_id, run);
-  }
-}
-
-async function pollContinuationRun(cardId, runId) {
-  const key = String(runId);
-  if (uiState.continuationPollers.has(key)) return;
-  uiState.continuationPollers.add(key);
-  const started = Date.now();
-  try {
-    while (Date.now() - started < 75000) {
-      const { data, error } = await sb.from('pulse_continuation_runs')
-        .select('id,card_id,status,safe_message,verification_summary,created_at,updated_at')
-        .eq('id', runId).single();
-      if (error) return;
-      uiState.continuationRuns.set(cardId, data);
-      if (['succeeded', 'failed'].includes(data.status)) {
-        loadCards();
-        return;
-      }
-      await new Promise(resolve => setTimeout(resolve, 1500));
-    }
-  } finally {
-    uiState.continuationPollers.delete(key);
-  }
 }
 
 function wireTypedCardActions(div, c) {
@@ -1120,7 +1105,23 @@ function togglePreview(div, url) {
     // Heuristic: a load that fires implausibly fast for a real page usually
     // means the navigation was aborted (X-Frame-Options / frame-ancestors)
     // and the frame settled on about:blank instead.
-    if (delta < 150) flagBlocked(wrap, url);
+    if (delta < 150) { flagBlocked(wrap, url); return; }
+    // UX#8 dead-timing-zone fix (2026-08-14): a real X-Frame-Options block
+    // can fire `load` at a perfectly ordinary in-between delay (a real
+    // cross-origin round trip happens before the browser blocks rendering),
+    // satisfying neither timing extreme above. Second signal, shortly after
+    // load: best-effort read contentWindow.location.href. It's only
+    // same-origin-readable (no throw) when the frame actually settled on
+    // about:blank — exactly what an XFO/frame-ancestors block leaves behind.
+    // A real different-origin page throws on the read, which correctly means
+    // "not blocked, nothing to flag."
+    setTimeout(() => {
+      try {
+        if (iframe.contentWindow && iframe.contentWindow.location.href === 'about:blank') {
+          flagBlocked(wrap, url);
+        }
+      } catch (_) { /* cross-origin read threw = real page loaded, not blocked */ }
+    }, 400);
   });
   iframe.src = url;
   setTimeout(() => { if (!gotLoad) flagBlocked(wrap, url); }, 2500);
@@ -1135,12 +1136,18 @@ function flagBlocked(wrap, url) {
 }
 
 async function bounceByMike(c) {
-  const { error } = await sb.from('pulse_cards').update({
+  // CODE#7 (2026-08-14): guard on status=open, mirroring the one write in
+  // this file that already got this right (maybeResolveTypedActionCard's
+  // .eq('status','open')). Without it, a Mike-vs-nightly-drain race (or a
+  // cross-device double-answer) could silently bounce a card that already
+  // moved to answered/resolved/retired under us.
+  const { data, error } = await sb.from('pulse_cards').update({
     status: 'bounced',
     bounce_reason: 'Not mine (Mike)',
     answered_at: new Date().toISOString(),
-  }).eq('id', c.id);
+  }).eq('id', c.id).eq('status', 'open').select();
   if (error) { alert('Failed: ' + error.message); return; }
+  if (!data || !data.length) { alert('This card already changed — reloading.'); loadCards(); return; }
   loadCards();
 }
 
@@ -1203,6 +1210,7 @@ function renderSnoozedCard(c) {
   const until = new Date(c.snoozed_until);
   const div = document.createElement('div');
   div.className = 'snoozed-card';
+  div.dataset.cardId = c.id;
   div.innerHTML = `
     <p class="title">${esc(title)}</p>
     <p class="until">Reopens ${esc(until.toLocaleString())}</p>
@@ -1267,7 +1275,7 @@ function renderComments(c) {
         ${list}
         ${pendingNote}
         <div class="comment-input-row">
-          <input class="textresp comment-input" placeholder="Comment, rate, or ask — the team reads every card's thread (never paste credentials)" />
+          <textarea class="textresp comment-input" rows="2" placeholder="Comment, rate, or ask — the team reads every card's thread (never paste credentials)"></textarea>
           <button class="btn-secondary" data-action="send-comment">Send</button>
         </div>
       </div>
@@ -1285,13 +1293,30 @@ function wireComments(div, c) {
   };
   const input = div.querySelector('.comment-input');
   const send = div.querySelector('[data-action="send-comment"]');
+  // CODE#9 (2026-08-14): a realtime pulse on ANY card full-rebuilds #cards,
+  // which used to wipe whatever Mike was mid-typing into a comment box on a
+  // DIFFERENT card — 64% of his closes are exactly this kind of in-conversation
+  // prose answer (SOMA/pulse/USEFULNESS-2026-08-11.md). Restore any draft this
+  // card had before the rebuild, and keep saving on every keystroke so the
+  // next rebuild (which WILL happen — comments/status changes elsewhere fire
+  // constantly) has something to restore from.
+  const draft = uiState.commentDrafts.get(c.id);
+  if (draft) input.value = draft;
+  input.oninput = () => {
+    const val = input.value;
+    if (val) uiState.commentDrafts.set(c.id, val);
+    else uiState.commentDrafts.delete(c.id);
+  };
   const submit = () => {
     const val = input.value.trim();
     if (!val) return;
+    uiState.commentDrafts.delete(c.id);
     postComment(c.id, val);
   };
   send.onclick = submit;
-  input.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+  // Enter sends (matches the old single-line input's behavior); Shift+Enter
+  // inserts a newline, now that this is a <textarea> (UX#11).
+  input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } };
 }
 
 function focusPulseThread(div, c) {
@@ -1306,6 +1331,14 @@ function focusPulseThread(div, c) {
 function renderCard(c) {
   const p = c.payload || {};
   const answered = c.status !== 'open';
+  // CODE#4 (2026-08-14): scheme-check every payload.url ONE TIME per render,
+  // here, and use this everywhere the card would otherwise reach into href /
+  // window.open / iframe.src with the raw value. A javascript:/data: URL
+  // authored onto any card type now fails to render a link/button at all
+  // (same "Invalid link" fallback pattern the step-action open_url path
+  // already used correctly) instead of becoming a live code-exec path inside
+  // Mike's authenticated session.
+  const safeUrl = safeHttpUrl(p.url);
   let body = '';
   if (c.type === 'action') {
     const cardActionContract = typedActions(c);
@@ -1323,12 +1356,12 @@ function renderCard(c) {
       <div class="action-line">
         <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}</p>
       </div>
-      ${p.why ? `<p class="why">${esc(p.why)}</p>` : ''}
+      ${p.why ? `<p class="why">${renderInlineText(p.why)}</p>` : ''}
       ${cardActionsPanel(c)}
       ${stepsAccordion(c.id, p.steps, c.step_state, p.step_actions)}
       <div class="actions">
-        ${p.url ? `<button class="btn-primary" data-action="open">Open</button>` : ''}
-        ${p.url ? `<button class="btn-secondary" data-action="preview">Preview</button>` : ''}
+        ${safeUrl ? `<button class="btn-primary" data-action="open">Open</button>` : ''}
+        ${safeUrl ? `<button class="btn-secondary" data-action="preview">Preview</button>` : ''}
         ${guideBtn}
         ${yeshieBtn}
         <button class="btn-secondary" data-action="ask-pulse">Ask Pulse</button>
@@ -1339,8 +1372,8 @@ function renderCard(c) {
   } else if (c.type === 'verdict') {
     body = `
       <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}</p>
-      <p class="why">${esc(p.summary)}</p>
-      ${p.url ? `<p><a class="link" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a></p>` : ''}
+      <p class="why">${renderInlineText(p.summary)}</p>
+      ${safeUrl ? `<p><a class="link" href="${esc(safeUrl)}" target="_blank" rel="noopener">${esc(safeUrl)}</a></p>` : ''}
       <div class="actions">
         <button class="btn-primary" data-action="accept">Accept</button>
         <button class="btn-secondary" data-action="change">Change</button>
@@ -1349,11 +1382,16 @@ function renderCard(c) {
       </div>
       <input class="textresp" style="display:none" placeholder="What to change..." />`;
   } else if (c.type === 'decision') {
-    const opts = (p.options || []).slice(0, 4);
+    // No silent truncation (Mike, 2026-08-14 fix order): every option is
+    // rendered as a real button — a decision card used to hard-slice to the
+    // first 4 with nothing on the card telling Mike a real choice ("Epsilon")
+    // was missing. Buttons wrap via .actions{flex-wrap}, so extra options
+    // just add rows, never get dropped.
+    const opts = p.options || [];
     body = `
       <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}</p>
-      ${p.why ? `<p class="body-text">${esc(p.why)}</p>` : ''}
-      ${p.url ? `<p class="body-text"><a href="${esc(p.url)}" target="_blank" rel="noopener">Full writeup &rarr;</a></p>` : ''}
+      ${p.why ? `<p class="body-text">${renderInlineText(p.why)}</p>` : ''}
+      ${safeUrl ? `<p class="body-text"><a href="${esc(safeUrl)}" target="_blank" rel="noopener">Full writeup &rarr;</a></p>` : ''}
       <div class="actions">
         ${opts.map((o, i) => `<button class="btn-secondary" data-action="opt" data-value="${esc(o)}">${esc(o)}</button>`).join('')}
         <button class="btn-secondary" data-action="other">Other</button>
@@ -1366,7 +1404,7 @@ function renderCard(c) {
     // default panel — never dumped inline (Mike, 2026-08-13).
     body = `
       <p class="title">${esc(stripEscalationBanner(p.title) || 'Daily brief')}${escalationBadge(c)}</p>
-      <p class="body-text">${esc(p.lines || '')}</p>
+      <p class="body-text">${renderInlineText(p.lines || '')}</p>
       ${briefDrill(c.id, p.full_text)}
       <div class="actions">
         <button class="btn-secondary" data-action="ack">Ack</button>
@@ -1375,6 +1413,7 @@ function renderCard(c) {
   }
   const div = document.createElement('div');
   div.className = 'card' + (answered ? ' answered' : '');
+  div.dataset.cardId = c.id;
   div.innerHTML = `<span class="kind kind-${c.type}">${cardKindLabel(c.type)}</span>${body}` +
     (answered ? `<div class="answer-tag">${esc(c.status)}${c.answer ? ': ' + esc(JSON.stringify(c.answer.value ?? c.answer)) : ''}${c.resolved_note ? ': ' + esc(c.resolved_note) : ''}</div>` : '') +
     renderComments(c);
@@ -1384,12 +1423,12 @@ function renderCard(c) {
       btn.onclick = async () => {
         const action = btn.dataset.action;
         // Local, non-persisting actions specific to the action-card layout.
-        if (action === 'open') { window.open(p.url, '_blank', 'noopener'); return; }
-        if (action === 'preview') { togglePreview(div, p.url); return; }
+        if (action === 'open') { if (safeUrl) window.open(safeUrl, '_blank', 'noopener'); return; }
+        if (action === 'preview') { if (safeUrl) togglePreview(div, safeUrl); return; }
         if (action === 'guide') { guideMeSteps(c.yeshie_steps); return; }
         if (action === 'yeshie-run') { await runYeshieTask(c.yeshie_task, btn); return; }
         if (action === 'ask-pulse') { focusPulseThread(div, c); return; }
-        if (action === 'not-mine') { await bounceByMike(c); return; }
+        if (action === 'not-mine') { btn.disabled = true; await bounceByMike(c); return; }
         if (action === 'snooze') { openSnoozeMenu(c); return; }
         if (action === 'other' || action === 'change') {
           const input = div.querySelector('.textresp');
@@ -1397,12 +1436,19 @@ function renderCard(c) {
           input.focus();
           input.onkeydown = async (e) => {
             if (e.key === 'Enter' && input.value.trim()) {
+              div.querySelectorAll('.actions button').forEach(b => { b.disabled = true; });
               await answerCard(c, { action_id: action, value: input.value.trim() });
             }
           };
           return;
         }
         const value = btn.dataset.value || action;
+        // CODE#6/#7 double-tap guard (2026-08-14): disable the whole action
+        // row synchronously before the await, mirroring the pattern
+        // runTypedCardAction/runStepAction already get right. A fast
+        // double-tap on a decision option used to fire two PATCHes with no
+        // guard and no UI signal that anything changed on the second tap.
+        div.querySelectorAll('.actions button').forEach(b => { b.disabled = true; });
         await answerCard(c, { action_id: action, value });
       };
     });
@@ -1418,122 +1464,34 @@ function renderBouncedCard(c) {
   const title = cardTitleText(c);
   const div = document.createElement('div');
   div.className = 'bounced-card';
+  div.dataset.cardId = c.id;
   div.innerHTML = `<p class="title">${esc(title)}</p><p class="reason">${esc(c.bounce_reason || '(no reason given)')} — <span class="muted">from ${esc(c.created_by)}</span></p>`;
   return div;
-}
-
-function queueCardTitle(c) {
-  const p = c.payload || {};
-  return stripEscalationBanner(p.title || p.artifact_name || p.question) || 'Untitled gate';
-}
-
-function queueExecutionLabel(state, c) {
-  const target = ((c.gate_contract || {}).target || {}).label || 'the highlighted control';
-  return {
-    ready: 'Ready',
-    team_preparing: 'Team preparing',
-    your_turn: `Your turn: ${target}`,
-    team_resuming: 'Team resuming',
-    verifying: 'Verifying',
-    cleared: 'Cleared',
-    could_not_verify: 'Could not verify',
-  }[state] || 'Ready';
-}
-
-function renderQueueCard(c) {
-  const gate = c.gate_contract || {};
-  const action = typedActions(c).actions[0];
-  const run = action ? typedActionRun(c, action) : null;
-  const continuation = uiState.continuationRuns.get(c.id) || null;
-  const stateRun = !run && continuation ? { status: 'done', result: { verified: true } } : run;
-  const executionState = PulseQueue.executionState(stateRun, continuation);
-  const meta = `
-    <div class="queue-meta">
-      <span class="queue-rank">#${esc(String(c.queue_position))}</span>
-      <span class="queue-gate">${esc((gate.kind || 'gate').replace(/^./, x => x.toUpperCase()))}</span>
-      <span class="queue-state ${esc(executionState)}">${esc(queueExecutionLabel(executionState, c))}</span>
-      <span class="muted">~${esc(String(gate.estimated_human_seconds || '?'))} sec</span>
-    </div>
-    <p class="queue-why-now"><strong>Why now:</strong> ${esc(c.priority_reason || '')}</p>
-    <p class="queue-only-mike">${esc(gate.reason_only_mike || '')}</p>`;
-  const card = renderCard(c);
-  if (continuation) {
-    card.querySelectorAll('button[data-action="opt"], button[data-action="other"], button[data-action="accept"], button[data-action="change"], button[data-action="retire"]')
-      .forEach(button => { button.disabled = true; });
-  }
-  if (Number(c.queue_position) === 1) {
-    const wrapper = document.createElement('section');
-    wrapper.className = 'queue-card-shell';
-    wrapper.innerHTML = meta;
-    wrapper.appendChild(card);
-    return wrapper;
-  }
-  const wrapper = document.createElement('details');
-  wrapper.className = 'queue-card-shell';
-  wrapper.innerHTML = `<summary class="queue-card-summary">#${esc(String(c.queue_position))} · ${esc(queueCardTitle(c))}</summary>${meta}`;
-  wrapper.appendChild(card);
-  return wrapper;
 }
 
 async function answerCard(cardOrId, answer) {
   const card = typeof cardOrId === 'object' ? cardOrId : null;
   const id = card ? card.id : cardOrId;
-  if (card && card.queue_state === 'queued') {
-    const { data, error } = await sb.rpc('answer_pulse_gate_v1', {
-      p_card_id: id,
-      p_answer: answer,
-    });
-    if (error) { alert('Failed: ' + error.message); return; }
-    const continuation = Array.isArray(data) ? data[0] : data;
-    if (continuation) {
-      uiState.continuationRuns.set(id, continuation);
-      pollContinuationRun(id, continuation.id);
-    }
-    loadCards();
-    return;
-  }
-  const { error } = await sb.from('pulse_cards').update({
+  // CODE#5 (2026-08-14): removed the queue_state==='queued' RPC branch —
+  // answer_pulse_gate_v1 has never existed in the live database (queue v1's
+  // migration was authored, never applied); every real card takes this one
+  // path below.
+  //
+  // CODE#7 (2026-08-14): status=open guard — this legacy answer path (used
+  // by every card in production) had no protection against double-tap,
+  // cross-device, or Mike-vs-drain races. .select() so an empty return is
+  // distinguishable from a real success (PostgREST returns [] on a WHERE
+  // that matches nothing).
+  const { data, error } = await sb.from('pulse_cards').update({
     status: answer.action_id === 'retire' || answer.action_id === 'skip' ? 'retired' : 'answered',
     answer,
     answered_at: new Date().toISOString()
-  }).eq('id', id);
+  }).eq('id', id).eq('status', 'open').select();
   if (error) { alert('Failed: ' + error.message); return; }
+  if (!data || !data.length) { alert('This card already changed — reloading.'); loadCards(); return; }
   loadCards();
 }
 
-async function loadQueueCardsV1() {
-  const main = document.getElementById('cards');
-  if (!main) return;
-  main.innerHTML = '';
-  const queueResult = await sb.from('pulse_active_queue_v1')
-    .select('*')
-    .order('queue_position', { ascending: true })
-    .limit(5);
-  if (queueResult.error) {
-    main.innerHTML = `<div class="empty">Queue preview unavailable: ${esc(queueResult.error.message)}</div>`;
-    document.getElementById('count').textContent = 'feature flag only';
-    return;
-  }
-  const cards = queueResult.data || [];
-  const ids = cards.map(card => card.id);
-  if (ids.length) {
-    const commentsResult = await sb.from('pulse_card_comments').select('*').in('card_id', ids);
-    if (!commentsResult.error) {
-      for (const card of cards) {
-        card.pulse_card_comments = (commentsResult.data || []).filter(comment => comment.card_id === card.id);
-      }
-    }
-  }
-  await Promise.all([loadTypedActionRuns(cards), loadContinuationRuns(cards)]);
-  const overflow = Number(cards[0] && cards[0].ready_behind_count || 0);
-  document.getElementById('count').textContent = `${cards.length} real blocker${cards.length === 1 ? '' : 's'}` +
-    (overflow ? ` · ${overflow} ready behind` : '');
-  if (!cards.length) {
-    main.innerHTML = '<div class="empty">Nothing genuinely needs you. The team is working.</div>';
-    return;
-  }
-  cards.forEach(card => main.appendChild(renderQueueCard(card)));
-}
 
 async function loadLegacyCards() {
   // Active work and terminal history are separate queries. A single
@@ -1610,8 +1568,33 @@ async function loadLegacyCards() {
   }
 }
 
+// ── Per-card deep link (UX#9 / handshake-protocol-v1.md R2) ────────────────
+// ?card=<id> scrolls to and highlights the matching card, opening its
+// collapsed section (snoozed/done/bounced) if that's where it lives. One-shot
+// per page load — every realtime pulse re-runs loadCards(), and re-yanking
+// scroll position on every unrelated update would fight
+// reloadCardsPreservingScroll()'s whole purpose.
+let deepLinkHandled = false;
+function applyCardDeepLink() {
+  if (deepLinkHandled) return;
+  const id = new URLSearchParams(location.search).get('card');
+  if (!id) { deepLinkHandled = true; return; }
+  const el = document.querySelector(`[data-card-id="${CSS.escape(id)}"]`);
+  if (!el) return; // not rendered yet this pass; try again on the next loadCards()
+  deepLinkHandled = true;
+  const details = el.closest('details');
+  if (details) details.open = true;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const prevOutline = el.style.outline, prevOffset = el.style.outlineOffset;
+  el.style.outline = '2px solid #6ea8fe';
+  el.style.outlineOffset = '2px';
+  setTimeout(() => { el.style.outline = prevOutline; el.style.outlineOffset = prevOffset; }, 3000);
+}
+
 async function loadCards() {
-  return QUEUE_V1_FLAG ? loadQueueCardsV1() : loadLegacyCards();
+  const result = await loadLegacyCards();
+  applyCardDeepLink();
+  return result;
 }
 
 // Any realtime pulse on ANY card (someone else's step checked, a comment
@@ -1630,7 +1613,7 @@ async function reloadCardsPreservingScroll() {
 
 async function renderApp(session) {
   app.innerHTML = `
-    <header><h1>${QUEUE_V1_FLAG ? 'Needs Mike' : 'Pulse Zero'}</h1><span class="count" id="count"></span></header>
+    <header><h1>Pulse Zero</h1><span class="count" id="count"></span></header>
     <main id="cards"><div class="empty">Loading...</div></main>`;
   await loadCards();
   if (!cardsChannel) {

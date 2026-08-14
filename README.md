@@ -88,31 +88,20 @@ path, a real typed action. Author to that.
 
 **Tower** (`~/Projects/_estate/specs/tower-steward-v0.md`) is the steward persona that gatekeeps the board. Cards that aren't genuinely Mike-gated get bounced with reason *"You know what to do, don't you?"* and land in the collapsed **Bounced (RSI)** section on the board — visible, not deleted, so the bounce rate feeds back into fleet norms (the RSI loop).
 
-## Executable queue v1 preview (implementation artifact, 2026-08-01)
+## Executable queue v1 — RETIRED-UNBUILT (2026-08-14)
 
-The first bounded-queue slice is implemented behind `?queue_v1=1`, but its
-additive migration has **not** been applied and the preview has not been
-deployed. `supabase/migrations/20260801_executable_queue_v1.sql` adds:
-
-- server-ranked positions 1–5, validation holds, duplicate handling, and an
-  append-only queue-event trail;
-- `pulse_active_queue_v1`, which excludes every existing `queue_state=legacy`
-  row and returns no more than five open, unsnoozed, contract-valid gates;
-- `enqueue_pulse_action(card_id, action_id, revision, attempt)`, which re-reads
-  the action from the queued card and constructs `mac_commands` server-side;
-- durable continuation runs, so a verified click/answer does not close a card
-  before its owner acknowledges or the named verifier succeeds. **No consumer
-  exists yet**: nothing calls `acknowledge_pulse_continuation_v1`, so with the
-  flag on, an answered judgment card stays open in its queue slot until that
-  worker is built. Keep the flag off for decision/verdict cards until it is.
-
-New producers opt in explicitly with `pulse-push --queue-v1` plus gate,
-continuation, priority, and stable `--key` metadata. Uncontracted producers
-remain legacy-compatible and never enter the active queue accidentally.
-Queued actions accept only reviewed typed operations; `yeshie_task`, arbitrary
-recipes/selectors/URLs, and prose-only instructions cannot establish
-eligibility. The deterministic test fixture uses the reserved `.invalid`
-domain and performs no browser or external-account operation.
+The bounded-queue slice described in `EXECUTABLE-QUEUE-PLAN-2026-08-01.md`
+was designed 2026-08-01 and never applied. Its migration
+(`supabase/migrations/20260801_executable_queue_v1.sql`) still sits
+unapplied in this repo, but the frontend code that assumed it existed
+(`?queue_v1=1`, `loadQueueCardsV1`/`renderQueueCard` in `public/index.html`,
+the whole of `public/pulse-queue.js`, `pulse-push --queue-v1` and its
+`validate_queue_contract` authoring path) has been **removed** — a CODE-lane
+adversarial review (2026-08-14) found it shipping to every board load and
+doing nothing in production except add attack surface. If this direction is
+revived: read the plan doc first, apply the migration, verify it against the
+live schema, and only then re-add the frontend branches — don't re-derive the
+design from scratch, and don't re-add UI for a schema that isn't there.
 
 ## Deploy
 

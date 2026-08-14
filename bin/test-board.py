@@ -47,6 +47,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import urllib.parse
 import uuid
@@ -229,6 +230,36 @@ def main():
                     "--source", TEST_SOURCE], capture_output=True, text=True,
                    env={**os.environ, "PULSE_ZERO_SERVICE_KEY": key})
 
+    # ── 2026-08-14 fix-wave regression fixtures ─────────────────────────
+    # Decision with more than 4 options — the board used to hard-slice to 4
+    # with no on-card signal (UX finding). It must now render every option.
+    many_opts_q = f"Smoke many-options decision {NONCE}?"
+    subprocess.run([PULSE_PUSH, "decision", "--question", many_opts_q,
+                    "--options", "Alpha,Beta,Gamma,Delta,Epsilon,Zeta",
+                    "--source", TEST_SOURCE], capture_output=True, text=True,
+                   env={**os.environ, "PULSE_ZERO_SERVICE_KEY": key})
+
+    # Hostile body text — markdown + a raw HTML payload + a bare URL, all in
+    # one --why. Must render bold/em/code and an auto-link, but the raw
+    # <img onerror> must never become a live element (UX#4/UX#2 + CODE#4
+    # composition — the auto-linkifier also runs safeHttpUrl()).
+    hostile_title = f"Smoke hostile body {NONCE}"
+    long_url = "https://example.test/" + ("a" * 90) + "/tail"
+    hostile_why = (
+        f"**bold** and _em_ and `code`, a link {long_url} mid-sentence, "
+        f'and a raw payload <img src=x onerror=alert(1)> plus a bad scheme '
+        f'[click](javascript:alert(2)) as PLAIN TEXT (not authored as payload.url).'
+    )
+    subprocess.run([PULSE_PUSH, "action", "--title", hostile_title, "--url", "https://example.test",
+                    "--why", hostile_why, "--source", TEST_SOURCE],
+                   capture_output=True, text=True, env={**os.environ, "PULSE_ZERO_SERVICE_KEY": key})
+
+    # Comment-thread card for the draft-preservation check (CODE#9).
+    draft_title = f"Smoke draft-preservation card {NONCE}"
+    subprocess.run([PULSE_PUSH, "action", "--title", draft_title, "--url", "https://example.test",
+                    "--source", TEST_SOURCE], capture_output=True, text=True,
+                   env={**os.environ, "PULSE_ZERO_SERVICE_KEY": key})
+
     typed_title = f"Smoke typed action {NONCE}"
     typed_label = f"Verify bridge {NONCE}"
     typed_action_id = f"gdoc-auth-{NONCE}"
@@ -325,6 +356,52 @@ def main():
     else:
         fail("changed step text clears stale index-aligned checkmarks",
              f"step_state={key_rows[0].get('step_state') if key_rows else None}")
+
+    # CODE#2 (2026-08-14): the DB-level partial unique index on
+    # (dedupe_key) WHERE status='open' must refuse a second OPEN row with a
+    # dedupe_key that's already open — bypass pulse-push's own app-level
+    # lookup+PATCH by POSTing directly, mirroring what a raw writer
+    # (pulse_common.push_card, which does no pre-lookup at all) would do.
+    dup_key_slug = f"smoke-dupkey-{NONCE}"
+    sb_rest("POST", "pulse_cards", key, body={
+        "app_id": APP_ID, "type": "action", "status": "open", "dedupe_key": dup_key_slug,
+        "payload": {"title": f"Smoke dupkey A {NONCE}", "url": "https://example.test"},
+        "created_by": TEST_SOURCE,
+    })
+    dup_key_rejected = False
+    try:
+        sb_rest("POST", "pulse_cards", key, body={
+            "app_id": APP_ID, "type": "action", "status": "open", "dedupe_key": dup_key_slug,
+            "payload": {"title": f"Smoke dupkey B {NONCE}", "url": "https://example.test"},
+            "created_by": TEST_SOURCE,
+        })
+    except urllib.error.HTTPError as e:
+        dup_key_rejected = e.code == 409
+    if dup_key_rejected:
+        ok("DB rejects a second OPEN row with the same dedupe_key (unique index)")
+    else:
+        fail("DB rejects a second OPEN row with the same dedupe_key (unique index)",
+             "second insert did not raise 409 — the partial unique index is missing or not enforced")
+
+    # CODE#1/#12/#13 (2026-08-14): verdict card titles must never render '?'.
+    # Push a real open verdict and confirm every title-deriving tool in the
+    # estate (pulse-answer-write --list is the one the task brief named)
+    # reads artifact_name, not the nonexistent 'artifact' key.
+    verdict_artifact = f"Smoke verdict artifact {NONCE}"
+    subprocess.run([PULSE_PUSH, "verdict", "--artifact", verdict_artifact,
+                    "--url", "https://example.test", "--summary", "Smoke verdict summary",
+                    "--source", TEST_SOURCE], capture_output=True, text=True,
+                   env={**os.environ, "PULSE_ZERO_SERVICE_KEY": key})
+    paw_list = subprocess.run(
+        [os.path.expanduser("~/Projects/_estate/bin/pulse-answer-write"), "--list"],
+        capture_output=True, text=True,
+    )
+    matching_line = next((line for line in paw_list.stdout.splitlines() if verdict_artifact in line), None)
+    if matching_line:
+        ok("pulse-answer-write --list shows the verdict's real title, not '?'", matching_line.strip())
+    else:
+        fail("pulse-answer-write --list shows the verdict's real title, not '?'",
+             f"no line contained {verdict_artifact!r}; stdout={paw_list.stdout[:500]!r}")
 
     done_rows = [r for r in rows if r.get("payload", {}).get("title") == done_title]
     if done_rows and done_rows[0]["status"] == "resolved":
@@ -565,6 +642,124 @@ def main():
                 fail("done card visible after expanding 'Recently done'", "still not found after open=true")
         else:
             fail("'Recently done' disclosure present", "no details.bounced-section with that summary text found")
+
+        # ── 2026-08-14 fix-wave regressions (top findings, each lane) ────
+        # Real device geometry, matching the live UX review's own method.
+        tab.send("Emulation.setDeviceMetricsOverride", {
+            "width": 412, "height": 915, "deviceScaleFactor": 3, "mobile": True,
+        })
+        tab.navigate(BOARD_URL, wait_ms=2500)
+        wait_for(tab, f"document.body.innerText.includes({json.dumps(many_opts_q)})", timeout_s=10)
+
+        # UX finding: decision options used to hard-slice to 4, no on-card signal.
+        opt_state = tab.eval(f"""(() => {{
+            const card = [...document.querySelectorAll('.card')]
+                .find(c => c.textContent.includes({json.dumps(many_opts_q)}));
+            if (!card) return null;
+            return [...card.querySelectorAll('button[data-action="opt"]')].map(b => b.textContent.trim());
+        }})()""")
+        if opt_state and set(opt_state) == {"Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"}:
+            ok("decision card renders all 6 options, no silent truncation", str(opt_state))
+        else:
+            fail("decision card renders all 6 options, no silent truncation", str(opt_state))
+
+        # CODE#4/UX#4/UX#2: hostile body text — markdown renders, raw HTML/
+        # javascript: never becomes live, long URL auto-links and never
+        # overflows the viewport.
+        hostile_state = tab.eval(f"""(() => {{
+            const card = [...document.querySelectorAll('.card')]
+                .find(c => c.textContent.includes({json.dumps(hostile_title)}));
+            if (!card) return null;
+            const why = card.querySelector('.why');
+            return {{
+                hasStrong: !!why.querySelector('strong') && why.querySelector('strong').textContent === 'bold',
+                hasEm: !!why.querySelector('em') && why.querySelector('em').textContent === 'em',
+                hasCode: !!why.querySelector('code') && why.querySelector('code').textContent === 'code',
+                autoLinked: !!why.querySelector('a[href^="https://example.test/aaa"]'),
+                noRawImg: !document.querySelector('img[src="x"]'),
+                noJsHref: ![...document.querySelectorAll('a[href]')].some(a => a.href.startsWith('javascript:')),
+                scrollWidth: document.documentElement.scrollWidth,
+                clientWidth: document.documentElement.clientWidth,
+            }};
+        }})()""")
+        if hostile_state and hostile_state["hasStrong"] and hostile_state["hasEm"] and hostile_state["hasCode"]:
+            ok("hostile body: markdown (bold/em/code) renders as real elements", str(hostile_state))
+        else:
+            fail("hostile body: markdown (bold/em/code) renders as real elements", str(hostile_state))
+        if hostile_state and hostile_state["autoLinked"]:
+            ok("hostile body: bare long URL auto-links via safeHttpUrl()")
+        else:
+            fail("hostile body: bare long URL auto-links via safeHttpUrl()", str(hostile_state))
+        if hostile_state and hostile_state["noRawImg"] and hostile_state["noJsHref"]:
+            ok("hostile body: raw <img onerror> and javascript: href never become live markup")
+        else:
+            fail("hostile body: raw <img onerror> and javascript: href never become live markup", str(hostile_state))
+        if hostile_state and hostile_state["scrollWidth"] <= hostile_state["clientWidth"] + 2:
+            ok("hostile body: long unbroken URL does not widen the page", str(hostile_state))
+        else:
+            fail("hostile body: long unbroken URL does not widen the page", str(hostile_state))
+
+        # UX#5: touch-target floor on every visible primary/secondary button
+        # and the comment-toggle link.
+        touch_state = tab.eval("""(() => {
+            const els = [...document.querySelectorAll(
+                '.card:not(.answered) .btn-primary, .card:not(.answered) .btn-secondary, ' +
+                '.card:not(.answered) .btn-destructive, .card:not(.answered) .comment-toggle'
+            )];
+            const under = els.filter(el => el.getBoundingClientRect().height < 44)
+                .map(el => ({ text: el.textContent.trim().slice(0, 30), h: el.getBoundingClientRect().height }));
+            return { total: els.length, under };
+        })()""")
+        if touch_state and touch_state["total"] > 0 and not touch_state["under"]:
+            ok(f"touch targets >= 44px on all {touch_state['total']} visible card buttons/comment-toggle")
+        else:
+            fail("touch targets >= 44px on all visible card buttons/comment-toggle", str(touch_state))
+
+        # UX#1: feedback chip must not overlap any visible card's action row.
+        overlap_state = tab.eval("""(() => {
+            const chip = document.querySelector('.soma-feedback-root');
+            if (!chip) return null;
+            const c = chip.getBoundingClientRect();
+            const buttons = [...document.querySelectorAll('.card:not(.answered) .actions button')];
+            const hit = buttons.find(b => {
+                const r = b.getBoundingClientRect();
+                if (r.width === 0 && r.height === 0) return false; // not in viewport / not laid out
+                return !(r.right < c.left || r.left > c.right || r.bottom < c.top || r.top > c.bottom);
+            });
+            return {
+                chip: { x: c.left, y: c.top, w: c.width, h: c.height },
+                overlapsButton: hit ? hit.textContent.trim() : null,
+            };
+        })()""")
+        if overlap_state and not overlap_state["overlapsButton"]:
+            ok("feedback chip does not overlap any visible card action button", str(overlap_state["chip"]))
+        else:
+            fail("feedback chip does not overlap any visible card action button", str(overlap_state))
+
+        # CODE#9: an in-progress comment draft must survive a realtime-style
+        # full re-render (loadCards()), not just persist because nothing
+        # happened to touch the DOM.
+        draft_state = tab.eval(f"""(async () => {{
+            const card = [...document.querySelectorAll('.card')]
+                .find(c => c.textContent.includes({json.dumps(draft_title)}));
+            if (!card) return {{ error: 'card not found' }};
+            const toggle = card.querySelector('[data-action="toggle-comments"]');
+            toggle.click();
+            const input = card.querySelector('.comment-input');
+            input.value = 'typing an unsent reply — must survive a reload';
+            input.dispatchEvent(new Event('input'));
+            await loadCards();  // simulates the realtime subscription's full rebuild
+            const newCard = [...document.querySelectorAll('.card')]
+                .find(c => c.textContent.includes({json.dumps(draft_title)}));
+            const newInput = newCard && newCard.querySelector('.comment-input');
+            return {{ preserved: !!newInput && newInput.value === 'typing an unsent reply — must survive a reload' }};
+        }})()""", await_promise=True)
+        if draft_state and draft_state.get("preserved"):
+            ok("in-progress comment draft survives a realtime full re-render")
+        else:
+            fail("in-progress comment draft survives a realtime full re-render", str(draft_state))
+
+        tab.send("Emulation.clearDeviceMetricsOverride")
 
         # Other-dialog contrast, both color schemes
         for scheme in ("dark", "light"):

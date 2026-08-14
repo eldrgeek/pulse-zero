@@ -61,6 +61,9 @@ from pulse_card_contract import CardContractError, validate_payload  # noqa: E40
 
 DEFAULT_URL = "https://omfwcodoimjmbrhssvfl.supabase.co"
 APP_ID = "pulse-zero"
+# UX#9 / handshake-protocol-v1.md R2: every producer should be able to hand a
+# session a direct link to the card it just pushed, not just an id.
+BOARD_URL = "https://pulse-zero.netlify.app"
 BOARD_INBOX = os.path.expanduser("~/Projects/SOMA/board/inbox")
 STEP_ACTION_COMMANDS = {
     "open_url",
@@ -72,20 +75,6 @@ CARD_ACTIONS_VERSION = 1
 CARD_ACTION_EXECUTORS = {"workflow", "web", "mac"}
 ACTION_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 TARGET_REF_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
-QUEUE_GATE_KINDS = {"authentication", "consent", "money", "judgment"}
-QUEUE_CONTINUATION_VERIFIERS = {"owner_acknowledged", "external_state", "artifact_state"}
-QUEUE_SUPPORTED_OPERATIONS = {
-    ("workflow", "gdoc_bridge_authorize"): {
-        "verification": "google_drive_about",
-        "target_ref": "google.oauth.consent.primary",
-        "target_host": "accounts.google.com",
-    },
-    ("workflow", "github_accept_org_invite"): {
-        "verification": "github_org_membership",
-        "target_ref": "github.org_invitation.accept",
-        "target_host": "github.com",
-    },
-}
 
 
 def sb_request(method, path, key, url, body=None, params=None):
@@ -276,150 +265,6 @@ def parse_json_object(raw, flag_name):
     return value
 
 
-def validate_queue_contract(card_type, payload, gate, continuation, dedupe_key,
-                            priority_band, priority_reason, blocked_work_count,
-                            yeshie_task=None):
-    """Fail closed for cards explicitly opting into queue v1.
-
-    Legacy producers remain readable and keep queue_state=legacy. A producer
-    asking for queue eligibility must supply a stable decision unit, one of the
-    four real Mike gates, a return-to-owner contract, deterministic priority,
-    and either a reviewed typed operation or a direct Pulse judgment.
-    """
-    if not dedupe_key:
-        raise ValueError("--queue-v1 requires --key for duplicate stewardship")
-    if not isinstance(priority_band, int) or isinstance(priority_band, bool) or not 0 <= priority_band <= 3:
-        raise ValueError("--queue-v1 requires --priority-band 0..3")
-    if not isinstance(priority_reason, str) or not priority_reason.strip():
-        raise ValueError("--queue-v1 requires --priority-reason")
-    if not isinstance(blocked_work_count, int) or isinstance(blocked_work_count, bool) or blocked_work_count < 0:
-        raise ValueError("--blocked-work-count must be a non-negative integer")
-
-    if gate.get("version") != 1 or gate.get("kind") not in QUEUE_GATE_KINDS:
-        raise ValueError("--gate-contract requires version=1 and kind authentication|consent|money|judgment")
-    if not isinstance(gate.get("reason_only_mike"), str) or not gate["reason_only_mike"].strip():
-        raise ValueError("--gate-contract.reason_only_mike is required")
-    estimate = gate.get("estimated_human_seconds")
-    if not isinstance(estimate, int) or isinstance(estimate, bool) or estimate < 1:
-        raise ValueError("--gate-contract.estimated_human_seconds must be a positive integer")
-    target = gate.get("target")
-    if not isinstance(target, dict) or target.get("surface") not in {"pulse", "web"}:
-        raise ValueError("--gate-contract.target.surface must be pulse or web")
-    if not isinstance(target.get("label"), str) or not target["label"].strip():
-        raise ValueError("--gate-contract.target.label is required")
-    if target["surface"] == "web":
-        parsed = urllib.parse.urlparse(target.get("url") or "")
-        if parsed.scheme != "https" or not parsed.netloc or not target.get("ref"):
-            raise ValueError("web queue gates require an HTTPS target.url and abstract target.ref")
-    if gate["kind"] == "money":
-        money = gate.get("money")
-        if not isinstance(money, dict) or not all(k in money for k in (
-                "amount", "currency", "payee", "maximum_authorized_amount")):
-            raise ValueError("money gates require amount, currency, payee, and maximum_authorized_amount")
-        if (not isinstance(money["amount"], (int, float)) or isinstance(money["amount"], bool) or
-                money["amount"] < 0 or
-                not isinstance(money["maximum_authorized_amount"], (int, float)) or
-                isinstance(money["maximum_authorized_amount"], bool) or
-                money["maximum_authorized_amount"] < money["amount"] or
-                not isinstance(money["currency"], str) or not re.fullmatch(r"[A-Z]{3}", money["currency"]) or
-                not isinstance(money["payee"], str) or not money["payee"].strip()):
-            raise ValueError("money gate terms are invalid")
-
-    if continuation.get("version") != 1 or continuation.get("operation") != "resume_card_owner":
-        raise ValueError("--continuation-contract requires version=1 and operation=resume_card_owner")
-    if continuation.get("trigger") not in {"gate_answered", "actions_verified"}:
-        raise ValueError("--continuation-contract.trigger must be gate_answered or actions_verified")
-    for field in ("owner_ref", "correlation_key", "success_message"):
-        if not isinstance(continuation.get(field), str) or not continuation[field].strip():
-            raise ValueError(f"--continuation-contract.{field} is required")
-    verifier = continuation.get("verification")
-    if not isinstance(verifier, dict) or verifier.get("kind") not in QUEUE_CONTINUATION_VERIFIERS:
-        raise ValueError("--continuation-contract.verification.kind is not supported")
-
-    if card_type == "action":
-        if yeshie_task is not None:
-            raise ValueError("queued cards cannot rely on legacy --yeshie-task")
-        actions = payload.get("actions")
-        if payload.get("actions_version") != 1 or not isinstance(actions, list) or not actions:
-            raise ValueError("queued action cards require --actions typed contract v1")
-        if continuation["trigger"] != "actions_verified":
-            raise ValueError("queued action continuations must trigger on actions_verified")
-        for action in actions:
-            spec = QUEUE_SUPPORTED_OPERATIONS.get((action.get("executor"), action.get("operation")))
-            if not spec:
-                raise ValueError(
-                    f"queued action operation is not reviewed: {action.get('executor')}/{action.get('operation')}"
-                )
-            action_target = (action.get("human_gate") or {}).get("target") or {}
-            parsed = urllib.parse.urlparse(action_target.get("url") or "")
-            if action_target.get("ref") != spec["target_ref"] or parsed.hostname != spec["target_host"]:
-                raise ValueError("queued action human-gate target is not reviewed")
-            if (action.get("verification") or {}).get("kind") != spec["verification"]:
-                raise ValueError("queued action verification is not reviewed")
-            if action.get("operation") == "github_accept_org_invite":
-                params = action.get("params") or {}
-                github_name = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
-                if set(params) != {"org", "username"} or not all(
-                        isinstance(params.get(key), str) and github_name.fullmatch(params[key])
-                        for key in ("org", "username")):
-                    raise ValueError("GitHub queue action requires strict params.org + params.username")
-                if parsed.path.rstrip("/") != f"/orgs/{params['org']}/invitation":
-                    raise ValueError("GitHub queue action requires the exact organization invitation URL")
-            if target.get("ref") != action_target.get("ref") or target.get("label") != action_target.get("label"):
-                raise ValueError("queue gate target must match the typed action human gate")
-    elif card_type in {"decision", "verdict"}:
-        if gate["kind"] != "judgment" or target["surface"] != "pulse":
-            raise ValueError("queued decision/verdict cards require a judgment gate on the Pulse surface")
-        if continuation["trigger"] != "gate_answered":
-            raise ValueError("queued decision/verdict continuations must trigger on gate_answered")
-        if card_type == "decision" and len(payload.get("options") or []) < 2:
-            raise ValueError("queued decisions require at least two explicit options")
-    else:
-        raise ValueError(f"{card_type} cards cannot enter queue v1")
-
-
-def apply_queue_authoring(row, args, card_type):
-    queue_fields = (
-        "gate_contract", "continuation_contract", "priority_band",
-        "priority_reason", "deadline_at", "mission_lane",
-    )
-    requested = bool(getattr(args, "queue_v1", False))
-    supplied = any(getattr(args, field, None) is not None for field in queue_fields) or \
-        getattr(args, "blocked_work_count", 1) != 1
-    if supplied and not requested:
-        raise ValueError("queue contract fields require --queue-v1")
-    if not requested:
-        return
-    gate = parse_json_object(getattr(args, "gate_contract", None), "--gate-contract")
-    continuation = parse_json_object(
-        getattr(args, "continuation_contract", None), "--continuation-contract"
-    )
-    validate_queue_contract(
-        card_type,
-        row["payload"],
-        gate,
-        continuation,
-        row.get("dedupe_key"),
-        getattr(args, "priority_band", None),
-        getattr(args, "priority_reason", None),
-        getattr(args, "blocked_work_count", 1),
-        row.get("yeshie_task"),
-    )
-    row.update({
-        "contract_version": 1,
-        "gate_contract": gate,
-        "continuation_contract": continuation,
-        "queue_state": "intake",
-        "priority_band": args.priority_band,
-        "priority_reason": args.priority_reason.strip(),
-        "blocked_work_count": args.blocked_work_count,
-    })
-    if args.deadline_at:
-        row["deadline_at"] = args.deadline_at
-    if args.mission_lane:
-        row["mission_lane"] = args.mission_lane
-
-
 def validate_action_revision_change(old_payload, new_payload):
     """A stable id+revision is an immutable idempotency boundary.
 
@@ -546,11 +391,10 @@ def push(args, key, url):
         if yt:
             row["yeshie_task"] = load_yeshie_task(yt)
 
-    try:
-        apply_queue_authoring(row, args, ctype)
-    except ValueError as e:
-        sys.stderr.write(f"error: {e}\n")
-        sys.exit(1)
+    # CODE#5 (2026-08-14): apply_queue_authoring() removed — queue v1's
+    # migration (view, 3 RPCs, gate/continuation columns) was authored
+    # 2026-08-01 and never applied to the live database. Every card this CLI
+    # has ever actually written used the plain path below.
 
     # ── Dedup path 1: explicit --key. Mirrors pulse-enqueue's "replace same
     # key" semantics — an OPEN card with the same dedupe_key gets updated in
@@ -609,6 +453,7 @@ def push(args, key, url):
             result = sb_request("PATCH", "pulse_cards", key, url, body=patch_body, params={"id": f"eq.{card_id}"})
             card = result[0] if isinstance(result, list) else result
             print(f"updated existing {ctype} card {card.get('id')} (key={dedupe_key})")
+            sys.stderr.write(f"  {BOARD_URL}/?card={card.get('id')}\n")
             return card
 
     # ── Dedup path 2: safety net for action cards pushed without --key.
@@ -624,11 +469,13 @@ def push(args, key, url):
                 f"  Use --key on anything a session might push more than once.\n"
             )
             print(f"skipped duplicate; existing card {dup.get('id')}")
+            sys.stderr.write(f"  {BOARD_URL}/?card={dup.get('id')}\n")
             return dup
 
     result = sb_request("POST", "pulse_cards", key, url, body=row)
     card = result[0] if isinstance(result, list) else result
     print(f"pushed {ctype} card {card.get('id')}")
+    sys.stderr.write(f"  {BOARD_URL}/?card={card.get('id')}\n")
     return card
 
 
@@ -816,20 +663,6 @@ def _parse_iso(s):
     return datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
-def add_queue_args(parser):
-    parser.add_argument(
-        "--queue-v1", action="store_true",
-        help="opt this card into the executable queue intake (requires the additive queue migration)",
-    )
-    parser.add_argument("--gate-contract", help="gate contract v1 JSON object or path")
-    parser.add_argument("--continuation-contract", help="continuation contract v1 JSON object or path")
-    parser.add_argument("--priority-band", type=int, choices=range(4))
-    parser.add_argument("--priority-reason", help="why this blocks active work now")
-    parser.add_argument("--deadline-at", help="optional ISO-8601 deadline; rank uses it after priority band")
-    parser.add_argument("--blocked-work-count", type=int, default=1)
-    parser.add_argument("--mission-lane", help="Legends, Playmaker, SOMA, or another stable lane")
-
-
 def main():
     p = argparse.ArgumentParser(description="Push/list/bounce/resolve cards on Pulse Zero")
     sub = p.add_subparsers(dest="type")
@@ -855,7 +688,6 @@ def main():
                          "that step in the board UI. See public/index.html STEP_ACTIONS_CONVENTION comment.")
     a.add_argument("--yeshie-task", dest="yeshie_task",
                     help="inline JSON or path to a Yeshie recipe/payload.json ('do it while I watch')")
-    add_queue_args(a)
 
     v = sub.add_parser("verdict")
     v.add_argument("--artifact", required=True)
@@ -863,16 +695,16 @@ def main():
     v.add_argument("--summary", required=True)
     v.add_argument("--source")
     v.add_argument("--key", help="stable dedup key — replaces any existing OPEN card with the same key instead of inserting a new one")
-    add_queue_args(v)
 
     d = sub.add_parser("decision")
     d.add_argument("--question", required=True)
-    d.add_argument("--options", required=True, help="comma-separated, max 4")
+    d.add_argument("--options", required=True,
+                    help="comma-separated ('|'-separated if an option itself contains a comma); "
+                         "the board renders every option, no cap (2026-08-14)")
     d.add_argument("--why", help="context shown on the card, so Mike can decide without asking the poster")
     d.add_argument("--url", help="deep link to the full writeup — the fast route to more info")
     d.add_argument("--source")
     d.add_argument("--key", help="stable dedup key — replaces any existing OPEN card with the same key instead of inserting a new one")
-    add_queue_args(d)
 
     b = sub.add_parser("brief")
     b.add_argument("--title", required=True)

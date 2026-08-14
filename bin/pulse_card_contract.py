@@ -204,6 +204,38 @@ def validate_field_types(card_type, payload):
         )
 
 
+def validate_url_scheme(payload):
+    """CODE#4 (2026-08-14): block any non-http(s) scheme on payload.url at the
+    contract layer, not just the client render paths.
+
+    Before this, ``url`` was type-checked (must be a string) but never
+    scheme-checked — ``--url 'javascript:fetch(...).then(...)'`` passed
+    ``validate_payload`` cleanly for action, verdict, and decision cards
+    alike. The client-side render fix (``safeHttpUrl()`` gating every
+    href/window.open/iframe.src in ``public/index.html``) closes the same
+    hole downstream, but a hard gate belongs at the point of insertion too —
+    an unvalidated row can still be read by any other consumer
+    (``pulse-board-truth``, a future integration) that doesn't happen to
+    scheme-check.
+    """
+    url = payload.get("url")
+    if not is_present(url):
+        return
+    try:
+        from urllib.parse import urlparse
+        scheme = urlparse(url).scheme.lower()
+    except Exception:
+        scheme = ""
+    if scheme not in ("http", "https"):
+        raise CardContractError(
+            "unsafe_url_scheme",
+            f"url (--url) must be an http(s) URL, got scheme {scheme or '(none)'!r}",
+            hint=(f"Value was {url!r}. A javascript:/data:/other-scheme URL "
+                  f"here becomes a live code-execution path when Mike clicks "
+                  f"it — this board only ever links to real web pages."),
+        )
+
+
 def validate_card_type(card_type):
     if card_type not in CARD_TYPES:
         raise CardContractError(
@@ -284,6 +316,7 @@ def validate_payload(card_type, payload, title_max=TITLE_MAX):
 
     validate_required_fields(card_type, payload)
     validate_field_types(card_type, payload)
+    validate_url_scheme(payload)
 
     warnings = []
     if card_type == "action":
@@ -356,9 +389,13 @@ def validate_payload(card_type, payload, title_max=TITLE_MAX):
                 "options must be a list of strings (comma-separated on the CLI)",
             )
         if len(opts) > 4:
+            # 2026-08-14 fix: the board used to hard-slice to 4 with nothing
+            # telling Mike a real option was dropped (UX finding). It now
+            # renders every option — this warning is just a nudge that a long
+            # option list makes for a busier card, not a truncation notice.
             warnings.append(
-                f"{len(opts)} options — the board renders at most 4 "
-                "(public/index.html slices the list); the rest are invisible."
+                f"{len(opts)} options — the board renders all of them, but "
+                "that's a lot of buttons on one card. Consider narrowing."
             )
         if not is_present(payload.get("why")) and not is_present(payload.get("url")):
             warnings.append(
