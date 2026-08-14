@@ -1614,6 +1614,20 @@ async function loadCards() {
   return QUEUE_V1_FLAG ? loadQueueCardsV1() : loadLegacyCards();
 }
 
+// Any realtime pulse on ANY card (someone else's step checked, a comment
+// posted anywhere on the board) rebuilds #cards from scratch via
+// main.innerHTML = ''. uiState already survives that rebuild (open drills,
+// pins, comment threads); scroll position did not — Mike (2026-08-14):
+// checking a step mid-flow on one card kept getting yanked back to the top
+// of the board because an unrelated card's realtime event landed while he
+// was reading. Same class of bug as the drill-state comment above, just
+// the one piece that wasn't carried over.
+async function reloadCardsPreservingScroll() {
+  const y = window.scrollY;
+  await loadCards();
+  window.scrollTo(0, y);
+}
+
 async function renderApp(session) {
   app.innerHTML = `
     <header><h1>${QUEUE_V1_FLAG ? 'Needs Mike' : 'Pulse Zero'}</h1><span class="count" id="count"></span></header>
@@ -1621,8 +1635,8 @@ async function renderApp(session) {
   await loadCards();
   if (!cardsChannel) {
     cardsChannel = sb.channel('pulse_cards_live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pulse_cards' }, () => loadCards())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pulse_card_comments' }, () => loadCards())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pulse_cards' }, () => reloadCardsPreservingScroll())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pulse_card_comments' }, () => reloadCardsPreservingScroll())
       .subscribe();
   }
 }
