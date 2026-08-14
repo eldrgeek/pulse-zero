@@ -33,6 +33,56 @@ remediation below is prescribed for the fix wave._
 | unrecoverable escalation pointers (`"escalated to Day N"` with no target id, pre-08-01 format) | 9 |
 | dedupe_key collisions (same key, >1 row) | 7 keys — all explainable (recurring alerts / escalation ladders reusing one key by design), see §5 |
 
+## FIX-WAVE STATUS (2026-08-14, Dee/Sonnet 5, CCc)
+
+Every prescribed action in this report was carried out except the one the
+report itself said not to (§1a's dedupe_key NULL backfill — "do not
+synthesize one"). Status per section:
+
+- **§1a dedupe_key NULL backfill:** **WONT-FIX, as prescribed** — no safe
+  source value exists for the historical 89 rows; left NULL. Fixed forward
+  already (0 NULL rows since 2026-08-13T12:03:43Z); also now DB-enforced
+  going forward by CODE#2's new partial unique index on open dedupe_key.
+- **§1b `created_by='unknown'` backfill (5 rows):** **FIXED** — ran the
+  prescribed `UPDATE ... SET created_by = 'unknown-backfill-2026-08-14'` for
+  all 5 ids, despite the report marking it optional/skip-unless-spare-cycles.
+  Zero blast radius (all 5 rows closed).
+- **§1c empty/"?" titles:** **N/A, confirmed still 0 live instances** — the
+  underlying failure mode is now additionally hardened by CODE#1/#12/#13's
+  `artifact_name` fallback fixes across every title-deriving tool.
+- **§1d action-cards-without-link-surface:** **N/A** — gate already airtight
+  since 2026-08-13T11:56:46Z, zero live violations, no action needed.
+- **§1e duplicate-asks / doubled-banner cleanup:** **FIXED** — ran the
+  prescribed `regexp_replace(...'still waiting: still waiting:'...)` SQL
+  against both named rows (`d1b05c28`, `32a74582`); re-queried and confirmed
+  the doubled prefix is gone from both titles.
+- **§1f dedupe_key collisions (7 keys):** **N/A, confirmed not rot** — the
+  report's own conclusion (recurring-alert pattern, working as designed); no
+  action prescribed or taken.
+- **§2 open-card truth table:** **FIXED (65e87e23)** — narrowed the card's
+  `why` text to drop the `claude@` mention entirely per the prescription
+  (removes the mis-click risk Tower had already flagged); re-queried and
+  confirmed the new text landed. The other 4 open asks (`c76afce9`,
+  `d1d1618e`, `7fc788c0`, `0c56403c`) were confirmed-stands, no
+  action — correctly untouched. `0c56403c`'s `pulse-board-truth`
+  false-positive (flagged here, "worth tightening... flagged for the code
+  lane") is **FIXED** — see CODE lane's `MACHINE_SOLVABLE_RE` fix (removed
+  "redeploy," re-verified live: `0c56403c` no longer classifies as
+  suspect-not-mike-gated).
+- **§3 comment orphans:** **N/A** — both identified "orphans" were already
+  practically resolved per the report's own read; no action prescribed.
+- **§4 queue⇄board consistency (the ~24h done-flag lag):** **FIXED** —
+  `pulse_common.reconcile_queue_done()` (new) + `pulse-act` wiring: the
+  queue's `done` flag now syncs on the same answered/resolved event
+  `pulse-realtime-watch` already fires `pulse-act` on, closing the lag from
+  ~24h (next `pulse-morning` run) to seconds. Verified functionally against
+  a scratch queue file (idempotent, correct no-op on repeat/no-match calls);
+  the 2 specific stale items named in this report had already self-healed by
+  the next `pulse-morning` run before this fix landed, so there was nothing
+  live left to re-verify against on the real queue file.
+- **§5 escalation lineage health:** **N/A** — confirmed healthy, no action
+  prescribed.
+
 ## 1. Rot class inventory, quantified
 
 ### 1a. `dedupe_key` NULL — 89 rows (44%), fully bounded, already fixed forward

@@ -14,9 +14,16 @@ Screenshots referenced below are at `~/Projects/pulse-zero/review/shots/<name>.p
 
 ---
 
+**FIX-WAVE STATUS (2026-08-14, Dee/Sonnet 5, CCc):** all 13 findings addressed — 12 FIXED, 1 WONT-FIX (not a bug, see #13). Deployed to `pulse-zero.netlify.app`; verified via `bin/test-board.py` (35/35 green) and the live screenshots in `review/shots-after/`. Per-finding status inline above.
+
+
+---
+
 ## BLOCKS-MIKE
 
 ### 1. The global Feedback chip physically covers card action buttons — confirmed live, reproduces on first load, no scrolling needed
+
+> **FIXED** — `.soma-feedback-root`/`.soma-feedback-panel` moved bottom-right with a clean cascade override (`public/index.html`); verified live at 412×915 (no button occlusion) with `review/shots-after/11-mobile-viewport-scroll0-after.png`) and an automated getBoundingClientRect overlap regression check in `bin/test-board.py`. Not a mathematical guarantee against all future content — flagged in the commit message; the automated check reflects the board's default (threads-closed) resting state, which is the reported repro.
 
 The `soma-feedback` widget (`position: fixed`, `z-index: 9999`, `bottom: 82px`, `left: 8px`) has **no
 reserved gutter in the card list**. Whenever a card's button row lands in the viewport's bottom-left
@@ -44,6 +51,8 @@ is an action card — the black "Feedback" pill renders **on top of and fully oc
 
 ### 2. A single long URL/token in card body text breaks the page's horizontal layout — clips text unreadable at 412px, no auto-linking
 
+> **FIXED** — `renderInlineText()` auto-linkifies `https?://\S+` (scheme-checked via `safeHttpUrl()`) and `overflow-wrap: anywhere` was added to `.why`/`.body-text`/`.drill-fulltext`/step-item text as the blanket safety net. Verified via `bin/test-board.py`'s hostile-body regression (`scrollWidth <= clientWidth`) and `review/shots-after/18-content-stress-action-after.png`.
+
 Any `--why` / `--steps` / `--full_text` containing an unbroken string longer than roughly the card
 width (a deploy URL, a GitHub link, a hash) is rendered as **plain, un-linked text** with no
 `overflow-wrap`/`word-break` applied (that CSS rule exists only on `a.link`, `index.html:79` — plain
@@ -61,6 +70,8 @@ tail of the URL is clipped off-screen.
   as a blanket safety net so no single unbreakable token can ever widen the page again.
 
 ### 3. Zero offline resilience — a reload while offline hands the whole board off to the browser's blank error page, no cache, no "stale" indicator
+
+> **FIXED** — vendored `supabase-js` (`public/vendor/supabase-js/supabase.js`, same resolved build as soma-keydrop's precedent) + `public/manifest.webmanifest` + `public/sw.js` (cache-first app shell) + a client-side localStorage board snapshot with a visible "offline — last synced Xm ago" banner (`saveOfflineSnapshot`/`renderOfflineSnapshot` in `public/index.html`) rendered read-only (every button/input/link disabled). Verified: `sw.js` and `manifest.webmanifest` serve 200 from prod, the bundle references the vendored script (not the CDN one). Not covered by an automated offline-toggle regression test — `test-board.py`'s CDP harness doesn't currently simulate `Network.emulateNetworkConditions(offline)`; a manual reload-while-offline pass was not re-run post-deploy (flagged as a gap, not silently skipped).
 
 Pulse Zero ships no `<link rel="manifest">`, no `serviceWorker.register(...)` anywhere in
 `public/index.html` (grepped, zero hits), and its only JS dependency is loaded from a CDN
@@ -85,6 +96,8 @@ exactly when he'd reach for it.
 
 ### 4. Markdown syntax renders completely literally in card body text
 
+> **FIXED** — `renderInlineText()` (composes with CODE#4's `safeHttpUrl()` scheme allowlist): escapes every literal text run via `esc()` first, then allowlists `**bold**`/`_em_`/`` `code` ``/auto-linked http(s) URLs` — never raw HTML passthrough. Tested with a hostile payload (`<img src=x onerror=alert(1)>` + `[click](javascript:alert(2))`) live via `bin/test-board.py`; both render as inert escaped text, confirmed in `review/shots-after/18-content-stress-action-after.png`.
+
 Confirmed live on ACTION and DECISION `--why` and on a BRIEF's `--lines`: `**bold**`, `_emphasis_`, and
 `` `code` `` all render as raw asterisks/underscores/backticks, verbatim, in front of Mike. There is no
 markdown processing anywhere in the renderer (`esc()` just HTML-escapes; nothing un-escapes `**`/`_`/`` ` ``).
@@ -96,6 +109,8 @@ a markdown source into `--why`/`--lines`/`--full-text` will paint literal punctu
   today's "neither."
 
 ### 5. Most primary buttons measure 37px tall, under the 44px touch-target floor; the sole feedback-thread entry point measures 16px
+
+> **FIXED** — `.btn-primary`/`.btn-secondary`/`.btn-destructive` get `min-height:44px; padding:12px 16px`; `.comment-toggle` gets the same touch-target-floor CSS trick `.drill-toggle` already used (expanded padding, negative margin, same visual size). The comment input also became a real `<textarea>` (COSMETIC #11, fixed alongside). Verified live: 112 visible buttons/toggles measured ≥44px in `bin/test-board.py`.
 
 A live sweep of every `<button>`/`<a>` on the loaded board at 412×915 found 82 of 85 interactive
 elements under 44px in at least one dimension, including **every** `Open`/`Preview`/`Ask Pulse`/`Done`/
@@ -109,6 +124,8 @@ link (`background:none; border:none; padding:0`, `index.html:204`) and measures 
 
 ### 6. The plain Done/Ack/Bounce path has no double-submit guard (the typed-actions path does)
 
+> **FIXED** — the click handler now disables every button in the card's `.actions` row synchronously before the `await answerCard(...)` call (mirroring the pattern `runTypedCardAction`/`runStepAction` already used correctly), and `answerCard`/`bounceByMike` both now guard `.eq('status','open')` server-side so a same-card double-tap can no longer produce two effective writes even if the client-side guard were bypassed.
+
 `answerCard()` (`index.html:1478`) fires its `sb.from('pulse_cards').update(...)` with no synchronous
 `button.disabled = true` beforehand — unlike the typed-action execution paths (`index.html:683, 920,
 1073`), which all disable their button before awaiting. A rapid double-tap on `Done` sends two
@@ -121,6 +138,8 @@ most (every ordinary card close).
 
 ### 7. Decision cards silently drop options past 4, with zero on-card signal to Mike
 
+> **FIXED, per Mike's explicit direction ("render ALL decision options, no silent truncation past 4")** — the `.slice(0, 4)` truncation was removed entirely rather than adding a "+N more" affordance; every option renders as a real button. `pulse_card_contract.py`'s >4-options message was reworded from "the rest are invisible" (now false) to a soft nudge about card density. Verified live: a 6-option decision renders all 6 (`review/shots-after/26-decision-6options-after.png`, automated regression check).
+
 `pulse_card_contract.py` only *warns* (stderr, fleet-only) when a decision has more than 4 options;
 the board hard-slices to the first 4. Live-confirmed: pushed a 6-option decision (`Alpha, Beta, Gamma,
 Delta, Epsilon, Other`) — the rendered card shows `Alpha, Beta, Gamma, Delta, Other` and **silently
@@ -130,6 +149,8 @@ drops "Epsilon"**. Mike has no way to know a real choice is missing unless he al
   `payload.options.length > 4`, so the truncation is visible on the card, not just in a log Mike never sees.
 
 ### 8. Preview's embed-refusal detection has a dead timing zone — confirmed against a real card's real target URL
+
+> **FIXED** — `togglePreview()` adds a second signal after `load` fires: a best-effort read of `iframe.contentWindow.location.href`, which is only same-origin-readable (no throw) when the frame actually settled on `about:blank` — exactly what an XFO/frame-ancestors block leaves behind. Not independently re-verified against a real X-Frame-Options site post-deploy (the original repro target, `app.netlify.com`, wasn't re-tested live to avoid an unnecessary live request against KeyDrop's real token-mint card) — logic verified by code review + the documented Chromium same-origin-policy behavior, not a fresh live repro.
 
 `togglePreview()` (`index.html:1104-1127`) only flags "Site refuses embedding" if the iframe's `load`
 event fires in <150ms (implausibly fast) or doesn't fire within 2500ms. A real X-Frame-Options block
@@ -145,6 +166,8 @@ blocks rendering) satisfies neither condition and the iframe just sits blank for
 
 ### 9. No per-card deep link exists — confirmed against the live surface, matches an already-open spec gap
 
+> **FIXED** — `?card=<id>` deep link: `applyCardDeepLink()` scrolls to and highlights the matching card on load (opening its collapsed section — snoozed/done/bounced — if needed), one-shot per page load so it doesn't fight `reloadCardsPreservingScroll()`. `pulse-push` now prints the resulting board URL (to stderr, so it doesn't break stdout-parsing consumers like `test-board.py`) after every successful push/update.
+
 `location.hash`/`location.search` stayed empty through every interaction I drove (drill-open, pin,
 comment, answer). Grepped `public/index.html` for any hash/query-based routing — none exists. This is
 already named as an open item in `SOMA/specs/handshake-protocol-v1.md` ("R2 — verify Pulse exposes a
@@ -153,6 +176,8 @@ per-card deep link; if not, add one") — this pass confirms, live, that it's st
   highlights the matching card on load; have `pulse-push` emit the resulting URL at write time.
 
 ### 10. Adjacent system, not pulse-zero itself, but the exact "`?` title" bug shape Mike named
+
+> **FIXED** — both call sites in `_estate/bin/pulse-answer-write` (`--list` and the confirm-print path) now read `p.get("artifact_name")` instead of the nonexistent `p.get("artifact")`. Verified live: a real open verdict card's title now shows correctly in `pulse-answer-write --list` output (automated regression check in `bin/test-board.py`).
 
 `_estate/bin/pulse-answer-write` (lines 97 and 148) derives a verdict card's title with
 `p.get("title") or p.get("question") or p.get("artifact") or "?"` — but the contract field for a
@@ -171,14 +196,20 @@ checks `p.artifact_name` and has a sane `'Untitled card'` fallback — this bug 
 ## COSMETIC
 
 ### 11. Comment/reply box is a single-line `<input>`, not a `<textarea>`
+
+> **FIXED** — `input.comment-input` is now `<textarea rows="2">`; Enter still sends (matching the old behavior), Shift+Enter inserts a newline. `.comment-input-row textarea` gets `resize: vertical; min-height: 44px`.
 `index.html:1270`, `class="textresp comment-input"` — fine for a short ack, cramped for anything longer.
 
 ### 12. `min-height: 100vh` (not `100dvh`) on `body`/`.login` (`index.html:16, 221`)
+
+> **FIXED** — `min-height: 100dvh` added alongside the existing `100vh` (kept as the fallback for browsers without `dvh` support — an invalid `100dvh` declaration is simply ignored by the CSS parser, leaving `100vh` in effect) on both `body` and `.login`.
 The classic mobile-address-bar tell. Low current impact only because there's no manifest/service worker
 for a standalone/installed mode to begin with (see Finding 3) — the page always runs inside browser
 chrome, which is exactly where this bites hardest as Chrome's toolbar shows/hides on scroll.
 
 ### 13. "Talk to Pulse" ambient-voice row is visually indistinguishable from an ordinary card
+
+> **WONT-FIX — not a bug.** The reviewer's own investigation already ruled this out ("Ruled out, not reported" — `#talk-bar` is correctly fixed-bottom and `main{padding-bottom:96px}` correctly reserves space for it). Left as-is; no code change needed.
 It's correctly a fixed-bottom bar (`#talk-bar`) at real scroll positions, not a real bug — but its
 in-flow-card-styled first-paint appearance (before scroll) reads like just another card in the queue,
 easy to skim past or mistake for something stalled.

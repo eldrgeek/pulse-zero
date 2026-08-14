@@ -7,6 +7,10 @@ live Supabase schema (project `omfwcodoimjmbrhssvfl`, read-only via Management
 API). **No files were edited.** This is a findings-only pass — the COO runs
 the fix wave.
 
+
+
+**FIX-WAVE STATUS (2026-08-14, Dee/Sonnet 5, CCc):** all 15 findings addressed — 13 FIXED, 1 FIXED-with-a-partial-WONT-FIX (#10's DB constraint half), 1 ANNOTATED (#14, comment corrected rather than building a new reopen feature). Deployed to `pulse-zero.netlify.app` + the live Supabase schema (verified via direct re-query on every DB-level claim). Per-finding status inline above.
+
 Live schema was queried directly (`information_schema`, `pg_policies`,
 `pg_constraint`, `pg_class`, `pg_proc`) rather than inferred from migration
 files, because the two have drifted (see #5). Every "confirmed" claim below
@@ -25,6 +29,8 @@ was checked against the running database, not just the SQL in the repo.
 ---
 
 ## 1. [BLOCKS-MIKE] `pulse-answer-write` renders every verdict card's title as literal `"?"`
+
+> **FIXED** — both call sites in `_estate/bin/pulse-answer-write` (line 97 list path, line 148 confirm-print path) now read `p.get("artifact_name")` instead of `p.get("artifact")`. Live-verified: `pulse-answer-write --list` correctly shows a real open verdict card's title (automated regression check in `bin/test-board.py`).
 
 **File:** `_estate/bin/pulse-answer-write:97` and `:148`
 
@@ -55,6 +61,8 @@ lines 97 and 148.
 ---
 
 ## 2. [CORRECTNESS] `dedupe_key` has no uniqueness constraint — "replace in place" is a UI-layer convention only, not a DB guarantee
+
+> **FIXED** — `create unique index pulse_cards_open_dedupe_key_idx on public.pulse_cards (dedupe_key) where status = 'open' and dedupe_key is not null;` applied live via the Management API (verified via `pg_indexes` re-query). The exact SQL prescribed. A raw duplicate-key INSERT while an open row with that key exists now returns HTTP 409 (verified live, automated regression check in `bin/test-board.py`).
 
 **File:** live schema (`pg_constraint` on `public.pulse_cards`) +
 `_estate/bin/pulse_common.py:396-443` (`push_card`) +
@@ -94,6 +102,8 @@ silently creating a duplicate.
 ---
 
 ## 3. [BLOCKS-MIKE] `pulse-drain`'s snapshot-then-write escalation can silently destroy Mike's just-recorded answer — this is the "dedupe_key reopening answered cards" mechanism
+
+> **FIXED** — `pulse_common.archive_card`'s PATCH is now conditional (`?id=eq.{id}&status=eq.open`) and returns `[]` (not raised) on a 0-row match; both `pulse-drain` call sites (retire loop and escalate loop) now check the result and log a skip ("card changed under us") instead of assuming success. This closes both the escalate-a-closed-ask and the answer-clobber failure modes with the one change the finding prescribed. Not independently re-tested against a live race (would require racing a real Mike answer against a live `pulse-drain --commit` run, which is out of scope for a fix-verification pass) — verified by code review + a direct DB-level test of the underlying conditional-PATCH mechanism (see CODE#2's regression check, same mechanism).
 
 **File:** `_estate/bin/pulse-drain:117-181`, `_estate/bin/pulse_common.py:446-450` (`archive_card`)
 
@@ -150,6 +160,8 @@ codebase, e.g. `pulse-push:783`, already handles that shape).
 ---
 
 ## 4. [BLOCKS-MIKE] `mac_commands` RLS policy is hardcoded to the wrong identity — every step-action / legacy typed-action button is broken when Mike is signed in via Google
+
+> **FIXED** — `alter policy mw_read_write on public.mac_commands using (public.is_pulse_owner()) with check (public.is_pulse_owner());` applied live (verified via `pg_policies` re-query: `qual`/`with_check` both now call `is_pulse_owner()`). `revoke all on public.mac_commands from anon;` also applied (verified via `information_schema.role_table_grants`: `anon` no longer appears). Not independently re-tested by actually signing in as `mw.personalmail@gmail.com` and clicking a step-action button (would require driving a real Google OAuth flow, out of scope for automated regression) — verified by direct policy-definition inspection, which is the actual mechanism the finding named.
 
 **File:** live schema (`pg_policies` on `public.mac_commands`) vs.
 `public/index.html:429-437` (`OWNER_EMAILS`) and `:696-698`, `:940-943`
@@ -210,6 +222,8 @@ public.mac_commands from anon;` while there.
 
 ## 5. [CORRECTNESS] The entire "queue v1" feature does not exist in the production database — migration authored, frontend shipped, never applied
 
+> **FIXED, by removal** (Mike's explicit direction: "REMOVE the ~250 dead lines... removal is the honest state") — deleted `loadQueueCardsV1`/`renderQueueCard`/`queueCardTitle`/`queueExecutionLabel`/`loadContinuationRuns`/`pollContinuationRun`, the `QUEUE_V1_FLAG`/`?queue_v1=1` branches in `answerCard`/`runTypedCardAction`/`maybeResolveTypedActionCard`, all of `public/pulse-queue.js` (+ its two test files + fixture), `pulse-push`'s `--queue-v1` authoring path (`validate_queue_contract`/`apply_queue_authoring`/`add_queue_args`), and the dead queue-only CSS. `EXECUTABLE-QUEUE-PLAN-2026-08-01.md` marked RETIRED-UNBUILT with a pointer back to itself if the direction is ever revived. The migration file itself (`supabase/migrations/20260801_executable_queue_v1.sql`) was left in place, unapplied, as the historical design record. Verified: full JS (`node --test`, 27/27) and Python (`pytest`, 23/23) suites green after removal.
+
 **File:** `supabase/migrations/20260801_executable_queue_v1.sql` (dated
 2026-08-01) vs. live schema (verified via `information_schema.tables` and
 `pg_proc`)
@@ -268,6 +282,8 @@ migration step, not an abandoned feature.
 
 ## 6. [BLOCKS-MIKE] Unsanitized `href`/`window.open`/iframe `src` from worker-authored `payload.url` — `javascript:`/`data:` URI is a live stored-XSS path in Mike's authenticated session
 
+> **FIXED** — `safeHttpUrl()` (already correct, already used for step-actions) now gates all four call sites named in this finding: verdict link, decision "Full writeup" link, action Open/Preview. Each site computes `safeUrl = safeHttpUrl(p.url)` once per render and uses it everywhere instead of raw `p.url`; the Open/Preview buttons don't render at all when it's `null` (matching the existing "Invalid link" fallback pattern). ALSO fixed at the contract layer (composing with the finding's own "skip rendering... when it returns null" suggestion, taken one layer further): `pulse_card_contract.py`'s new `validate_url_scheme()` refuses any non-http(s) `url` at insertion time, so a bad-scheme card can no longer even reach the board. Verified: 4 new unit tests in `test/test_card_contract_gate.py`, plus a live hostile-payload browser test (`bin/test-board.py`) confirming no `javascript:` href ever appears in the DOM.
+
 **File:** `public/index.html:1343` (verdict link), `:1356` (decision "Full
 writeup" link), `:1387-1388` (action "Open"/"Preview") vs.
 `pulse_card_contract.py:123-131` (`REQUIRED_FIELD_TYPES = {"url": str, ...}`
@@ -318,6 +334,8 @@ existing `Invalid link` fallback at `:618`) when it returns `null`.
 ---
 
 ## 7. [CORRECTNESS] Terminal-state PATCHes from the client carry no status guard — double-tap, cross-device, and drain-vs-answer races are all unprotected except on one path
+
+> **FIXED** — `bounceByMike` and `answerCard`'s legacy PATCH both now append `.eq('status', 'open')` (mirroring the one write that already got this right) and check the returned row count via `.select()`; an empty return surfaces "this card already changed — reloading" instead of silent success. The clicked button (and its whole `.actions` row) is now disabled synchronously before the `await`, matching `runTypedCardAction`/`runStepAction`'s existing pattern. Closes failure scenarios A (double-tap) and C (answer-vs-drain, via CODE#3's matching server-side guard); scenario B (cross-device) is mitigated the same way — whichever PATCH lands first wins cleanly, the second gets the "already changed" surfaced instead of a silent overwrite.
 
 **File:** `public/index.html:1137-1145` (`bounceByMike`), `:1478-1502`
 (`answerCard`, legacy branch) vs. `:907-911`
@@ -370,6 +388,8 @@ by the two functions that get this right.
 
 ## 8. [CORRECTNESS] `pulse-realtime-watch.mjs`'s status-transition check is a no-op — `REPLICA IDENTITY` doesn't carry `old.status`
 
+> **FIXED** — `alter table public.pulse_cards replica identity full;` applied live (verified via `pg_class.relreplident = 'f'`). `pulse-realtime-watch.mjs`'s existing `was !== is` comparison now does what its own comment already claimed — no code change was needed there once `p.old?.status` actually carries the prior value; the comparison was correct code waiting on a schema fix, not itself buggy.
+
 **File:** `_estate/bin/pulse-realtime-watch.mjs:107-116` vs. live schema
 (`pg_class.relreplident` for `pulse_cards`)
 
@@ -413,6 +433,8 @@ resolved," which is honestly what the code does today.
 ---
 
 ## 9. [CORRECTNESS] A realtime event on *any* card wipes an in-progress, unsent comment on the card Mike is actively typing into
+
+> **FIXED** — `uiState.commentDrafts` (a `Map<cardId, string>`) is now written on every `input` event on `.comment-input` and restored in `wireComments()` after any re-render, cleared only on successful submit. Verified live: typed-but-unsent draft text on one card survives a full `loadCards()` rebuild triggered by an unrelated realtime event (automated regression check in `bin/test-board.py`, simulating the exact scenario the finding describes).
 
 **File:** `public/index.html:1617-1642` (`reloadCardsPreservingScroll`,
 `renderApp`'s subscription), `:409-425` (`uiState`), `:1269-1274`
@@ -458,6 +480,8 @@ doesn't close it.
 
 ## 10. [CORRECTNESS] `created_by` silently defaults to `'unknown'` with no board-visible marker
 
+> **FIXED (board-visible signal only)** — `sourceUnknownBadge(c)` renders a small "source unknown" badge (same visual style as the escalation badge) whenever `c.created_by === 'unknown'`. **WONT-FIX (partial)** — the finding's second suggestion, a DB CHECK constraint forcing ask-cards to fail loudly rather than land unattributed, was not added: `pulse-push`'s own loud stderr warning already makes the omission visible in every producer's log at write time (the gap this finding is really about is the *board-visible* signal, which is now fixed), and a hard DB constraint risks turning a currently-recoverable soft failure into a hard 4xx for any caller that doesn't set `created_by` — judged a bigger, separately-reviewable change than this fix wave's scope.
+
 **File:** live schema (`pulse_cards.created_by` `column_default =
 'unknown'::text`), `pulse-zero/bin/pulse-push:519-531`
 
@@ -494,6 +518,8 @@ needs to "answer" one.
 
 ## 11. [HYGIENE] `cardTitleText()` / `queueCardTitle()` are near-duplicate functions, and the latter is dead code
 
+> **FIXED, by removal** — `queueCardTitle` (the near-duplicate, dead half of this finding) was deleted along with the rest of CODE#5's dead queue-v1 code. `cardTitleText()` remains the one canonical title function, used everywhere.
+
 **File:** `public/index.html:360-363` vs. `:1425-1428`
 
 ```js
@@ -519,6 +545,8 @@ functional risk either way since the code doesn't currently run.
 
 ## 12. [HYGIENE] `pulse-act`'s log-line title has the same missing-`artifact_name`-fallback bug as #1, lower stakes
 
+> **FIXED** — `_estate/bin/pulse-act`'s log-line title derivation now includes the `artifact_name` fallback (`title = (_payload.get("title") or _payload.get("question") or _payload.get("artifact_name") or "")[:60]`), matching CODE#1's fix pattern.
+
 **File:** `_estate/bin/pulse-act:150-151`
 
 ```python
@@ -537,6 +565,8 @@ own audit trail unreadable for one whole card type.
 ---
 
 ## 13. [HYGIENE / CORRECTNESS for the audit tool itself] `pulse-board-truth`'s title/gating logic never reads `artifact_name`
+
+> **FIXED** — added a shared `card_title(card)` helper (title → artifact_name → question fallback) to `_estate/bin/pulse-board-truth`; `card_text()`'s `parts` list now includes `artifact_name`, and all three JSON-report title-derivation sites (`defects.open_action_cards_without_link_surface`, `defects.open_cards_suspect_not_mike_gated`, `open_cards`) now call the shared helper instead of a bare `.get("title")`. Verified: `--selftest` still passes (17/17 including the read-only-guarantee AST check), and a live `--stdout` run against the real board shows correct gating classifications for both open verdict-shaped and non-verdict cards.
 
 **File:** `_estate/bin/pulse-board-truth:301-306` (`card_text`), `:333-335`
 (`gating_verdict`'s `title` variable), `:456-467` (`defects`/`open_cards`
@@ -577,6 +607,8 @@ sites.
 
 ## 14. [HYGIENE] `archive_card`'s docstring claims reversibility that no code implements
 
+> **ANNOTATED (comment corrected, reopen path not built)** — per the finding's own two sanctioned options, took the cheaper one: `archive_card`'s docstring now says "terminal — no reopen path exists today" instead of falsely claiming reversibility. Building an actual `pulse-push reopen`/board-UI affordance was judged out of this fix wave's scope (a real feature addition, not a bug fix) — flagged here as a legitimate follow-up, not silently dropped.
+
 **File:** `_estate/bin/pulse_common.py:446-450`
 
 ```python
@@ -603,6 +635,8 @@ board-UI affordance the comment describes, or correct the comment to say
 ---
 
 ## 15. [HYGIENE] `test-board.sh`'s 25/25 suite has zero coverage of every state-machine, security, and dead-code finding above
+
+> **EXTENDED** — added 6 new unit tests to `test/test_card_contract_gate.py` (URL-scheme gate ×4, uncapped-decision-options ×2) and 9 new checks to `bin/test-board.py` (decision-no-truncation, hostile-body markdown/XSS ×3, touch-target floor, feedback-chip non-overlap, comment-draft preservation, dedupe_key DB constraint, verdict-title-not-"?"). Explicitly NOT covered by this pass, same as the finding names: `mac_commands` RLS under the actual Google OAuth identity (would require driving a real OAuth flow — verified by direct policy inspection instead, see CODE#4), `pulse-drain`'s live race under real concurrent load (verified by code review + the shared conditional-PATCH mechanism's DB-level test, see CODE#3), and `queue_v1=1` (correctly absent — the feature was removed, not fixed, see CODE#5). Full suite state after this pass: `test-board.py` 35/35, `pytest` 23/23, `node --test` 27/27.
 
 **File:** `pulse-zero/bin/test-board.py` (645 lines, 25 named checks)
 
