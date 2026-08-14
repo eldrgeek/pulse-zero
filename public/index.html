@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>Pulse Zero</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/vendor/supabase-js/supabase.js"></script>
 <script src="/pulse-actions.js"></script>
 <link rel="stylesheet" href="/vendor/soma-feedback/soma-feedback.css">
 <style>
@@ -29,6 +29,10 @@
   header .count { font-size: 13px; opacity: 0.6; }
   main { max-width: 640px; margin: 0 auto; padding: 12px 12px 80px; }
   .empty { text-align: center; opacity: 0.5; padding: 60px 20px; font-size: 15px; }
+  .offline-banner {
+    background: #3a2e12; color: #e8b545; border: 1px solid #5a4620; border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 12px; font-size: 13px; line-height: 1.4;
+  }
   .card {
     background: #16181b; border: 1px solid #26292d; border-radius: 14px;
     padding: 16px; margin-bottom: 12px; animation: in 0.2s ease;
@@ -302,6 +306,7 @@
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#111111">
 </head>
 <body>
@@ -362,6 +367,15 @@ function escalationBadge(c) {
   const day = escalationDay(c);
   if (!day) return '';
   return `<span class="escalation" title="Escalated by pulse-drain — still waiting after ${day} day${day === 1 ? '' : 's'}">⏫ Day ${day}</span>`;
+}
+
+// CODE#10 (2026-08-14): created_by defaults to 'unknown' (DB column default
+// + pulse-push's own loud-warn fallback) with previously zero on-board
+// signal — Mike had no way to see, from the card itself, that a card is
+// unattributed. Cheap, visible marker; matches the escalation badge's style.
+function sourceUnknownBadge(c) {
+  if ((c || {}).created_by !== 'unknown') return '';
+  return `<span class="escalation" title="No producer attribution — created_by was not set when this card was pushed">source unknown</span>`;
 }
 
 // The one place any surface should read a card's display title from.
@@ -1354,7 +1368,7 @@ function renderCard(c) {
       : '';
     body = `
       <div class="action-line">
-        <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}</p>
+        <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}${sourceUnknownBadge(c)}</p>
       </div>
       ${p.why ? `<p class="why">${renderInlineText(p.why)}</p>` : ''}
       ${cardActionsPanel(c)}
@@ -1371,7 +1385,7 @@ function renderCard(c) {
       </div>`;
   } else if (c.type === 'verdict') {
     body = `
-      <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}</p>
+      <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}${sourceUnknownBadge(c)}</p>
       <p class="why">${renderInlineText(p.summary)}</p>
       ${safeUrl ? `<p><a class="link" href="${esc(safeUrl)}" target="_blank" rel="noopener">${esc(safeUrl)}</a></p>` : ''}
       <div class="actions">
@@ -1389,7 +1403,7 @@ function renderCard(c) {
     // just add rows, never get dropped.
     const opts = p.options || [];
     body = `
-      <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}</p>
+      <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}${sourceUnknownBadge(c)}</p>
       ${p.why ? `<p class="body-text">${renderInlineText(p.why)}</p>` : ''}
       ${safeUrl ? `<p class="body-text"><a href="${esc(safeUrl)}" target="_blank" rel="noopener">Full writeup &rarr;</a></p>` : ''}
       <div class="actions">
@@ -1403,7 +1417,7 @@ function renderCard(c) {
     // producer supplied one, sits behind briefDrill()'s collapsed-by-
     // default panel — never dumped inline (Mike, 2026-08-13).
     body = `
-      <p class="title">${esc(stripEscalationBanner(p.title) || 'Daily brief')}${escalationBadge(c)}</p>
+      <p class="title">${esc(stripEscalationBanner(p.title) || 'Daily brief')}${escalationBadge(c)}${sourceUnknownBadge(c)}</p>
       <p class="body-text">${renderInlineText(p.lines || '')}</p>
       ${briefDrill(c.id, p.full_text)}
       <div class="actions">
@@ -1493,6 +1507,65 @@ async function answerCard(cardOrId, answer) {
 }
 
 
+// ── Offline board snapshot (UX#3, 2026-08-14) ───────────────────────────
+// Persists just the open-card set — the part of the board offline actually
+// matters for ("what does Mike need to see right now") — not the full
+// history/bounced/typed-action-run state, which would bloat localStorage for
+// no offline-facing benefit and go stale in ways that would be confusing to
+// half-render (a "Done" click that can't reach the network, etc).
+const OFFLINE_SNAPSHOT_KEY = 'pulse_offline_snapshot_v1';
+
+function saveOfflineSnapshot(openCards) {
+  try {
+    localStorage.setItem(OFFLINE_SNAPSHOT_KEY, JSON.stringify({
+      at: Date.now(),
+      cards: (openCards || []).map(c => ({
+        id: c.id, type: c.type, payload: c.payload, status: c.status,
+        created_by: c.created_by, snoozed_until: c.snoozed_until,
+      })),
+    }));
+  } catch (_) { /* localStorage full/unavailable — offline fallback just won't have data */ }
+}
+
+function readOfflineSnapshot() {
+  try {
+    const raw = localStorage.getItem(OFFLINE_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return (parsed && Array.isArray(parsed.cards) && parsed.cards.length) ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function formatAgo(ms) {
+  const mins = Math.round((Date.now() - ms) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function renderOfflineSnapshot(main, snapshot) {
+  const banner = document.createElement('div');
+  banner.className = 'offline-banner';
+  banner.textContent = `Offline — showing ${snapshot.cards.length} open card${snapshot.cards.length === 1 ? '' : 's'} as of ${formatAgo(snapshot.at)}. Reconnect to act on anything.`;
+  main.appendChild(banner);
+  // Read-only rendering: reuse renderCard() for the visual, but strip every
+  // interactive affordance so nothing here can attempt a network write while
+  // offline (a click that silently fails, or worse queues confusingly, is
+  // worse than no button at all).
+  snapshot.cards.forEach(c => {
+    const div = renderCard(c);
+    div.querySelectorAll('button, input, textarea, a[href]').forEach(el => {
+      if (el.tagName === 'A') el.removeAttribute('href');
+      else el.disabled = true;
+    });
+    main.appendChild(div);
+  });
+}
+
 async function loadLegacyCards() {
   // Active work and terminal history are separate queries. A single
   // status-sorted LIMIT could otherwise hide every open card once terminal
@@ -1516,7 +1589,23 @@ async function loadLegacyCards() {
   const main = document.getElementById('cards');
   if (!main) return;
   main.innerHTML = '';
-  if (error) { main.innerHTML = `<div class="empty">Load error: ${esc(error.message)}</div>`; return; }
+  if (error) {
+    // UX#3 (2026-08-14): a network-shaped failure while a prior snapshot
+    // exists shows the last-known open cards with a visible staleness
+    // banner instead of a bare "Load error" — the previous behavior handed
+    // the whole board off to nothing, on exactly the elevator/subway/weak-
+    // signal moments Mike would actually reach for this.
+    const offlineLike = !navigator.onLine ||
+      /failed to fetch|networkerror|load failed/i.test(error.message || '');
+    const snapshot = offlineLike ? readOfflineSnapshot() : null;
+    if (snapshot) {
+      renderOfflineSnapshot(main, snapshot);
+      return;
+    }
+    main.innerHTML = `<div class="empty">Load error: ${esc(error.message)}</div>`;
+    return;
+  }
+  saveOfflineSnapshot(data.filter(c => c.status === 'open' && !isSnoozedActive(c)));
   await loadTypedActionRuns(data);
   // "open" = the default view: status open AND not currently snoozed.
   // Snoozed-active cards are pulled out into their own section so nothing
@@ -1649,6 +1738,17 @@ function route(session) {
   if (!session) { stopCardsRealtime(); renderLogin(); }
   else if (owner) renderApp(session);
   else { stopCardsRealtime(); renderWrongAccount(session); }
+}
+
+// UX#3 (2026-08-14): register the offline shell worker. Best-effort — a
+// registration failure (unsupported browser, sandboxed context) must never
+// block the board itself from loading.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((err) => {
+      console.warn('sw.js registration failed (non-fatal):', err);
+    });
+  });
 }
 
 async function boot() {
