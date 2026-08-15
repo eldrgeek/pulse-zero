@@ -93,6 +93,57 @@ class UrlSchemeGate(unittest.TestCase):
         self.assertNotEqual(ctx.exception.rule, "unsafe_url_scheme")
 
 
+class R2bProseStepsWarning(unittest.TestCase):
+    """2026-08-15 soft gate (handshake-protocol-v1.md §R2b): a --steps line
+    with no matching --step-actions entry and no typed --actions warns
+    (never rejects — this is the estate's loud-first, promote-later
+    rollout pattern, same as the link-surface gate's own history)."""
+
+    def test_prose_steps_with_no_actions_warns(self):
+        warnings = pcc.validate_payload(
+            "action",
+            {
+                "title": "Do the three things",
+                "url": "https://example.test",  # satisfies the hard link-surface gate
+                "steps": "1) do a\n2) do b\n3) do c",
+            },
+        )
+        self.assertTrue(any(w.startswith("R2b:") for w in warnings))
+        self.assertTrue(any("3/3" in w for w in warnings))
+
+    def test_steps_fully_covered_by_step_actions_does_not_warn(self):
+        warnings = pcc.validate_payload(
+            "action",
+            {
+                "title": "Do the three things",
+                "steps": "1) do a\n2) do b\n3) do c",
+                "step_actions": [
+                    {"command": "open_url", "payload": {"url": "https://example.test/a"}},
+                    {"command": "open_url", "payload": {"url": "https://example.test/b"}},
+                    {"command": "open_url", "payload": {"url": "https://example.test/c"}},
+                ],
+            },
+        )
+        self.assertFalse(any(w.startswith("R2b:") for w in warnings))
+
+    def test_typed_actions_present_suppresses_the_warning_even_with_prose_steps(self):
+        warnings = pcc.validate_payload(
+            "action",
+            {
+                "title": "Approve X",
+                "actions": [{"id": "a", "label": "Approve"}],
+                "steps": "1) read the diff\n2) approve it",
+            },
+        )
+        self.assertFalse(any(w.startswith("R2b:") for w in warnings))
+
+    def test_no_steps_at_all_does_not_warn(self):
+        warnings = pcc.validate_payload(
+            "action", {"title": "Open the thing", "url": "https://example.test"}
+        )
+        self.assertFalse(any(w.startswith("R2b:") for w in warnings))
+
+
 class DecisionOptionsUncapped(unittest.TestCase):
     """UX finding (2026-08-14): the board used to hard-slice decision options
     to 4 with no on-card signal. It now renders all of them; the contract

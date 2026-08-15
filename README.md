@@ -61,6 +61,37 @@ every "Needs Mike" bullet since WQ-288 — every one of them was, by
 construction, unable to carry a link. That minting path is retired; see
 `_estate/bin/coo-briefing-format.py`.)
 
+**Cards are stateful (R2b, Mike 2026-08-15).** "The board is a console, not
+a message board." `payload.status_line` is a card's own self-reported
+precondition state — e.g. "⏳ waiting for Stephanie's Stripe invite" flipping
+itself to "📬 email received" the moment a watcher sees the matching mail —
+rendered above `--why` in its own highlighted line. Set it at authoring time
+with `pulse-push action --status-line "..."`; flip it later from a
+watcher/daemon/job with `_estate/bin/pulse-card-status --key <dedupe_key>
+--status-line "..."`. **Never** write `status_line` by PATCHing the card's
+`status` column (open/answered/resolved/...) — that stays R3a/board-owned;
+`status_line` is payload-only and purely descriptive. The exemplar:
+`stripe-teammate-key-mint` (card id `7fc788c0-…`), rebuilt 2026-08-15 from
+four lines of prose steps into a status line + three real
+`--step-actions` buttons (open the invite email, run the staged Yeshie
+recipe via an `open_session` dispatch that narrates as card comments, deploy
+the copied key), watched by `claude-email-daemon`'s config-driven
+`card_status_watchers` rule.
+
+**R2b soft gate (2026-08-15, `pulse_card_contract.py`, WARNING not hard
+fail).** Beyond the hard link-surface gate below (which only demands *one*
+clickable thing anywhere on the card), `validate_payload()` now warns when an
+action card's `--steps` contains lines with no matching `--step-actions`
+entry and the card carries no typed `--actions` either — i.e. prose steps a
+human still has to translate into clicks by hand, sitting right next to
+steps that already have real buttons. This starts as a warning on purpose
+(same gate-rollout pattern as the link-surface gate's own history: land
+loud-but-non-blocking, measure real authoring traffic, then promote) — do
+not flip it to a hard `CardContractError` without first checking the false-
+positive rate the way that gate's rollout did. See
+`~/Projects/SOMA/specs/handshake-protocol-v1.md` §R2b for the doctrine this
+enforces.
+
 **One card = one decision (Mike, 2026-08-11).** A card is one specific turn
 needing one action — never a paragraph Mike must parse into two mental
 decisions. "Should we kill/keep X *and* Y" is **two** cards with two `--key`s,
@@ -148,6 +179,23 @@ Even without `--key`, `action` cards get a safety net: pushing an action with th
 insert and warns on stderr instead of silently duplicating. (Bug found 2026-07-26: the
 original `pulse-push` did a bare INSERT on every call with no dedup at all — multiple
 sessions/Tower pushing near-identical cards produced real duplicates on the board.)
+
+### Flipping a card's status_line from a watcher/daemon (R2b, 2026-08-15)
+
+```bash
+export PULSE_ZERO_SERVICE_KEY=<supabase secret key>
+~/Projects/_estate/bin/pulse-card-status --key stripe-teammate-key-mint --status-line "📬 Email received — click Accept + create the key"
+~/Projects/_estate/bin/pulse-card-status --key stripe-teammate-key-mint --show   # read-only
+```
+
+`_estate/bin/pulse-card-status` PATCHes `payload.status_line` only (merged
+into the card's existing payload, every other key untouched), re-validates
+the result against `pulse_card_contract.validate_payload()` before writing,
+and is conditional on `status=open` so a card Mike already answered can
+never have its payload silently rewritten under him. It never touches the
+`status` column. `claude-email-daemon`'s `card_status_watchers` config
+section (see that repo's `config.yaml`) is the first real caller — an
+incoming email matching a rule shells out to this script.
 
 ### Decision cards must carry their own context (2026-07-29)
 

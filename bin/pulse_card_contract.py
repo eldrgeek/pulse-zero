@@ -93,7 +93,7 @@ REQUIRED_FIELDS = {
 # Everything else the payload may legitimately carry, per type.
 OPTIONAL_FIELDS = {
     "action": ("why", "steps", "url", "step_actions", "actions", "actions_version",
-               "escalation_day", "orig_key"),
+               "escalation_day", "orig_key", "status_line"),
     "decision": ("why", "url", "escalation_day", "orig_key"),
     "verdict": ("why", "escalation_day", "orig_key"),
     # full_text (2026-08-13, Mike's roundup-copy fix): `lines` is the short,
@@ -381,6 +381,38 @@ def validate_payload(card_type, payload, title_max=TITLE_MAX):
                     "--lines/--full-text) until it has a real affordance."
                 ),
             )
+
+        # R2b SOFT GATE (2026-08-15, Mike: "the board is a console, not a
+        # message board" — handshake-protocol-v1.md §R2b). The hard gate
+        # above only demands ONE clickable thing somewhere on the card; a
+        # card can pass it with a single `--url` and still carry a numbered
+        # `--steps` checklist that is pure prose Mike has to read and
+        # translate into clicks by hand — exactly card 7fc788c0's shape
+        # before its R2b rebuild (four lines of "1) ... 2) ... 3) ...").
+        # This is deliberately a WARNING, not a hard fail: promoting it
+        # follows the estate's own gate-rollout pattern (RLS `using(true)`,
+        # the link-surface gate itself) of landing loud-but-non-blocking
+        # first, measuring the false-positive rate, then promoting. Tune
+        # before promoting — do not flip this to a CardContractError without
+        # first checking real authoring traffic the way the link-surface
+        # gate's rollout did.
+        step_lines = [ln for ln in (payload.get("steps") or "").splitlines() if ln.strip()]
+        if step_lines and not payload.get("actions"):
+            step_actions_list = payload.get("step_actions") or []
+            unactioned = sum(
+                1 for i in range(len(step_lines))
+                if not (i < len(step_actions_list) and isinstance(step_actions_list[i], dict))
+            )
+            if unactioned:
+                warnings.append(
+                    f"R2b: {unactioned}/{len(step_lines)} step(s) in --steps have no matching "
+                    "--step-actions entry (and the card carries no typed --actions either) — "
+                    "prose steps a human must interpret are a contract violation wherever an "
+                    "executable action is possible (handshake-protocol-v1.md §R2b). If a real "
+                    "affordance exists for that step, wire it via --step-actions/--actions; if "
+                    "none exists yet, consider whether this belongs on the board as an action "
+                    "card yet."
+                )
     elif card_type == "decision":
         opts = payload.get("options") or []
         if not isinstance(opts, (list, tuple)):
