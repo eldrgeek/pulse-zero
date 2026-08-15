@@ -17,7 +17,7 @@ USAGE
   python3 review/build-findings.py
 
 OUTPUT (all outside public/ — never directly web-reachable)
-  netlify/functions/review-data/findings.json   — parsed, filterable index;
+  netlify/functions/review-data-files/findings.json — parsed, filterable index;
     required by netlify/functions/review-data.js, which gates it on a
     verified Supabase owner session before returning it.
   netlify/functions/review-assets/manifest.json — {"shots/<name>.png": base64,
@@ -50,7 +50,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent  # pulse-zero/
 REVIEW = ROOT / "review"
-OUT_DATA_DIR = ROOT / "netlify" / "functions" / "review-data"
+# review-data-FILES, not review-data — a co-located folder sharing a Netlify
+# function file's exact basename (review-data.js) breaks esbuild's directory
+# resolution at deploy time; see the comment in netlify/functions/review-data.js.
+OUT_DATA_DIR = ROOT / "netlify" / "functions" / "review-data-files"
 OUT_ASSETS_DIR = ROOT / "netlify" / "functions" / "review-assets"
 
 FILES = [
