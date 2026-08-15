@@ -1,0 +1,21 @@
+# .gitleaks.toml — secret-gate false-positive allowlist for pulse-zero.
+#
+# WHY THIS EXISTS: secret-gate (WQ-256, ~/Projects/_estate/bin/secret-gate)
+# flagged public/review/index.html + netlify/functions/review-{data,asset}.js
+# for "generic-api-key" on the line `SUPABASE_ANON_KEY = 'sb_publishable_...'`.
+# This is Supabase's PUBLISHABLE anon key (see netlify.toml's
+# SECRETS_SCAN_OMIT_KEYS comment and README.md's Sign-in section) — safe by
+# design to ship client-side, protected by RLS, and already public in
+# public/index.html itself (that line predates secret-gate's installation on
+# this repo, so it was never scanned; this is the first push to actually hit
+# the hook with this literal). NARROW allowlist: the exact known-public value
+# only, not the "generic-api-key" rule or any path, so a real leaked key
+# anywhere in this repo still trips the gate.
+[extend]
+useDefault = true
+
+[allowlist]
+regexTarget = "match"
+regexes = [
+  '''sb_publishable_vi2qDWjozUJ5mi9dwirkLA_rj6UaqLf''',
+]
