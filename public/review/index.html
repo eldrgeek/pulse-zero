@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Pulse Zero — Findings</title>
+<script src="/vendor/supabase-js/supabase.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, system-ui, sans-serif;
+    background: #0b0d10; color: #f0f2f4; min-height: 100vh; min-height: 100dvh;
+  }
+  @media (prefers-color-scheme: light) { body { background: #f4f5f7; color: #14171a; } }
+  header {
+    position: sticky; top: 0; padding: 14px 16px; background: rgba(20,22,26,0.92);
+    backdrop-filter: blur(8px); border-bottom: 1px solid #2a2d31; z-index: 10;
+  }
+  @media (prefers-color-scheme: light) { header { background: rgba(244,245,247,0.92); border-bottom-color: #dcdfe3; } }
+  header .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  header a.back { color: inherit; opacity: 0.6; font-size: 13px; text-decoration: none; }
+  header a.back:hover { opacity: 1; }
+  header .sub { font-size: 12.5px; opacity: 0.6; margin-top: 4px; }
+  main { max-width: 760px; margin: 0 auto; padding: 12px 12px 80px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  .chip {
+    font-size: 12.5px; font-weight: 650; padding: 7px 12px; border-radius: 20px;
+    border: 1px solid #35383d; background: #16181b; color: #ccc; cursor: pointer;
+    min-height: 32px; -webkit-tap-highlight-color: transparent;
+  }
+  @media (prefers-color-scheme: light) { .chip { background: #fff; border-color: #d7dae0; color: #333; } }
+  .chip.active { background: #2f6fed; color: #fff; border-color: #2f6fed; }
+  select, input[type=search] {
+    font: inherit; font-size: 13.5px; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid #35383d; background: #16181b; color: #f0f2f4;
+  }
+  @media (prefers-color-scheme: light) { select, input[type=search] { background: #fff; color: #14171a; border-color: #cfd3d8; } }
+  input[type=search] { flex: 1 1 220px; min-width: 160px; }
+  .demo-link {
+    display: block; margin: 4px 0 16px; padding: 12px 14px; border-radius: 12px;
+    background: #12302e; color: #4ecdc4; text-decoration: none; font-size: 13.5px; font-weight: 600;
+  }
+  .count-line { font-size: 12.5px; opacity: 0.6; margin: 4px 0 14px; }
+  .lane-group { margin-bottom: 22px; }
+  .lane-group h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.55; margin: 0 0 8px; }
+  .finding {
+    background: #16181b; border: 1px solid #26292d; border-radius: 12px;
+    margin-bottom: 8px; overflow: hidden;
+  }
+  @media (prefers-color-scheme: light) { .finding { background: #fff; border-color: #e3e5e8; } }
+  .finding-head {
+    width: 100%; text-align: left; background: none; border: none; color: inherit;
+    padding: 12px 14px; display: flex; align-items: center; gap: 10px; cursor: pointer;
+    font: inherit; min-height: 44px;
+  }
+  .finding-num { font-size: 12px; opacity: 0.45; font-weight: 700; flex-shrink: 0; }
+  .finding-title { flex: 1 1 auto; font-size: 14.5px; font-weight: 600; line-height: 1.35; }
+  .finding-caret { flex-shrink: 0; opacity: 0.5; transition: transform 0.15s; }
+  .finding[data-open="1"] .finding-caret { transform: rotate(90deg); }
+  .badge {
+    display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
+    text-transform: uppercase; padding: 3px 7px; border-radius: 6px; flex-shrink: 0;
+  }
+  .badge-lane-UX { background: #16233a; color: #6ea8fe; }
+  .badge-lane-CODE { background: #2a1830; color: #d68fe0; }
+  .badge-lane-DATA { background: #12302e; color: #4ecdc4; }
+  .badge-sev-BLOCKS-MIKE { background: #3a1414; color: #ff9a8a; }
+  .badge-sev-CORRECTNESS { background: #3a2e12; color: #e8b545; }
+  .badge-sev-DEGRADES { background: #302a12; color: #e0c56a; }
+  .badge-sev-HYGIENE { background: #1c2430; color: #8fb0e0; }
+  .badge-sev-COSMETIC { background: #232323; color: #ccc; }
+  .badge-status-FIXED { background: #12302e; color: #4ecdc4; }
+  .badge-status-other { background: #26292d; color: #ccc; }
+  .finding-body { padding: 0 14px 16px; font-size: 13.5px; line-height: 1.55; }
+  .finding-body p { margin: 0 0 10px; overflow-wrap: anywhere; }
+  .finding-body blockquote {
+    margin: 0 0 10px; padding: 8px 10px; border-left: 3px solid #2f6fed;
+    background: rgba(47,111,237,0.08); border-radius: 0 8px 8px 0; opacity: 0.92;
+  }
+  .finding-body ul, .finding-body ol { margin: 0 0 10px; padding-left: 20px; }
+  .finding-body li { margin-bottom: 4px; }
+  .finding-body code { background: #0e1013; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  @media (prefers-color-scheme: light) { .finding-body code { background: #eee; } }
+  .finding-body a { color: #6ea8fe; word-break: break-all; }
+  .commit-link {
+    display: inline-block; margin: 0 0 10px; font-size: 12px; padding: 4px 8px;
+    border-radius: 6px; background: #0e1013; color: #a8c8ff; text-decoration: none;
+  }
+  @media (prefers-color-scheme: light) { .commit-link { background: #eef2fb; } }
+  .shots { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 4px; }
+  .shot-col { display: flex; flex-direction: column; gap: 6px; }
+  .shot-col h4 { font-size: 10.5px; text-transform: uppercase; opacity: 0.5; margin: 0 0 2px; }
+  .shot-thumbs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .shot-thumbs a img {
+    width: 96px; height: 96px; object-fit: cover; border-radius: 8px;
+    border: 1px solid #2a2d31; display: block;
+  }
+  .empty { text-align: center; opacity: 0.5; padding: 60px 20px; font-size: 15px; }
+  .login { display: flex; align-items: center; justify-content: center; min-height: 100vh; min-height: 100dvh; padding: 24px; }
+  .login-box { max-width: 360px; width: 100%; text-align: center; }
+  .login-box input { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #35383d; background: #16181b; color: #f0f2f4; font-size: 15px; margin: 16px 0 10px; }
+  @media (prefers-color-scheme: light) { .login-box input { background: #fff; color: #14171a; border-color: #cfd3d8; } }
+  .login-box button, .google-btn { width: 100%; background: #2f6fed; color: white; padding: 12px; border: none; border-radius: 10px; font-size: 15px; font-weight: 650; cursor: pointer; min-height: 44px; }
+  .google-btn { background: #fff; color: #14171a; border: 1px solid #cfd3d8; display: flex; align-items: center; justify-content: center; gap: 10px; }
+  .google-btn svg { width: 18px; height: 18px; }
+  .login-sep { margin: 14px 0; opacity: 0.5; font-size: 12.5px; }
+  .btn-magic { width: 100%; background: #2f6fed; color: white; padding: 12px; border: none; border-radius: 10px; font-size: 15px; font-weight: 650; cursor: pointer; min-height: 44px; }
+  .muted { opacity: 0.6; font-size: 13px; }
+  .skip-link { position: absolute; left: -9999px; }
+</style>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+</head>
+<body>
+<div id="app"></div>
+<script>
+const SUPABASE_URL = 'https://omfwcodoimjmbrhssvfl.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_vi2qDWjozUJ5mi9dwirkLA_rj6UaqLf';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const app = document.getElementById('app');
+
+// Same owner allowlist as the board (public/index.html) — this page names
+// internals (fix mechanisms, before/after screenshots) so it MUST sit
+// behind the same gate, not a lighter one. This client-side check controls
+// only what the UI *shows*; the real gate is server-side: findings.json and
+// every screenshot live outside public/ entirely and are served only by
+// netlify/functions/review-data.js / review-asset.js, which independently
+// verify the caller's Supabase bearer token and require one of these emails
+// before returning anything. An anonymous request to either function gets
+// 401 with no data — verified below, not just assumed.
+const OWNER_EMAILS = ['mw@mike-wolf.com', 'mw.personalmail@gmail.com'];
+const sessionEmail = (session) => (session?.user?.email || '').toLowerCase();
+const isOwner = (session) => OWNER_EMAILS.includes(sessionEmail(session));
+
+function esc(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+const GOOGLE_MARK = `<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#4285F4" d="M45.1 24.5c0-1.6-.1-2.8-.4-4H24v7.3h12.1c-.2 2-1.6 5-4.5 7l6.9 5.4c4.1-3.8 6.6-9.4 6.6-15.7z"/><path fill="#34A853" d="M24 46c5.9 0 10.9-2 14.5-5.3l-6.9-5.4c-1.9 1.3-4.4 2.2-7.6 2.2-5.8 0-10.7-3.8-12.5-9.1l-7.1 5.5C8.1 41.1 15.4 46 24 46z"/><path fill="#FBBC05" d="M11.5 28.4c-.5-1.4-.7-2.9-.7-4.4s.3-3 .7-4.4l-7.1-5.5C2.9 17 2 20.4 2 24s.9 7 2.4 9.9l7.1-5.5z"/><path fill="#EA4335" d="M24 10.2c4.1 0 6.9 1.8 8.5 3.3l6.2-6C34.9 4 29.9 2 24 2 15.4 2 8.1 6.9 4.4 14.1l7.1 5.5C13.3 14.3 18.2 10.2 24 10.2z"/></svg>`;
+
+function renderLogin() {
+  app.innerHTML = `
+    <div class="login"><div class="login-box">
+      <h1 style="margin-bottom:4px;">Pulse Zero — Findings</h1>
+      <p class="muted">Sign in with the board's owner account to view.</p>
+      <button id="google" class="google-btn">${GOOGLE_MARK}Continue with Google</button>
+      <div class="login-sep">or</div>
+      <input id="email" type="email" placeholder="mw@mike-wolf.com" autocomplete="email" />
+      <button id="send" class="btn-magic">Send magic link</button>
+      <p class="muted" id="status" style="margin-top:12px;"></p>
+    </div></div>`;
+  document.getElementById('google').onclick = async () => {
+    const status = document.getElementById('status');
+    status.textContent = 'Opening Google...';
+    const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + '/review/' } });
+    if (error) status.textContent = 'Error: ' + error.message;
+  };
+  document.getElementById('send').onclick = async () => {
+    const email = document.getElementById('email').value.trim();
+    const status = document.getElementById('status');
+    if (!email) { status.textContent = 'Enter an email.'; return; }
+    status.textContent = 'Sending...';
+    const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + '/review/' } });
+    status.textContent = error ? 'Error: ' + error.message : 'Check your email for the link.';
+  };
+}
+
+function renderWrongAccount(session) {
+  app.innerHTML = `
+    <div class="login"><div class="login-box">
+      <h1 style="margin-bottom:4px;">Pulse Zero — Findings</h1>
+      <p class="muted">Signed in as <strong>${esc(session.user.email || 'unknown')}</strong>, which isn't on this board.</p>
+      <button id="signout" class="btn-magic" style="margin-top:18px;">Sign out and try another account</button>
+    </div></div>`;
+  document.getElementById('signout').onclick = () => sb.auth.signOut();
+}
+
+// ── Minimal, safe markdown-ish renderer for finding body text ──────────
+// Same safety invariant as the board's renderInlineText(): every literal
+// run goes through esc() before touching innerHTML; the only markup this
+// can ever emit is <strong>/<code>/<em>/<a>/<p>/<ul>/<li>/<blockquote>, and
+// every href is scheme-checked. No raw HTML passthrough, ever.
+function safeHttpUrl(rawUrl) {
+  try { const u = new URL(rawUrl); return ['https:', 'http:'].includes(u.protocol) ? u.href : null; }
+  catch (_) { return null; }
+}
+function renderInline(raw) {
+  const src = String(raw == null ? '' : raw);
+  const re = /(\*\*([^*\n]+)\*\*)|(`([^`\n]+)`)|(_([^_\n]+)_)|(https?:\/\/[^\s<>"')]+)/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(src))) {
+    out += esc(src.slice(last, m.index));
+    if (m[1]) out += `<strong>${esc(m[2])}</strong>`;
+    else if (m[3]) out += `<code>${esc(m[4])}</code>`;
+    else if (m[5]) out += `<em>${esc(m[6])}</em>`;
+    else if (m[7]) {
+      const href = safeHttpUrl(m[7]);
+      out += href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(m[7])}</a>` : esc(m[7]);
+    }
+    last = re.lastIndex;
+  }
+  out += esc(src.slice(last));
+  return out;
+}
+function renderBodyMd(md) {
+  const lines = String(md || '').split('\n');
+  let html = '', para = [], listBuf = [], inQuote = false, quoteBuf = [];
+  const flushPara = () => { if (para.length) { html += `<p>${renderInline(para.join(' '))}</p>`; para = []; } };
+  const flushList = () => { if (listBuf.length) { html += `<ul>${listBuf.map(li => `<li>${renderInline(li)}</li>`).join('')}</ul>`; listBuf = []; } };
+  const flushQuote = () => { if (quoteBuf.length) { html += `<blockquote>${renderInline(quoteBuf.join(' '))}</blockquote>`; quoteBuf = []; inQuote = false; } };
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) { flushPara(); flushList(); flushQuote(); continue; }
+    if (line.startsWith('>')) { flushPara(); flushList(); quoteBuf.push(line.replace(/^>\s?/, '')); inQuote = true; continue; }
+    if (inQuote) flushQuote();
+    if (/^[-*]\s+/.test(line)) { flushPara(); listBuf.push(line.replace(/^[-*]\s+/, '')); continue; }
+    flushList();
+    if (/^\|.*\|$/.test(line)) { para.push(line); continue; } // tables render as plain text, good enough here
+    para.push(line);
+  }
+  flushPara(); flushList(); flushQuote();
+  return html || '<p class="muted">(no body text)</p>';
+}
+
+const GH_REPO = 'https://github.com/eldrgeek/pulse-zero';
+
+function findingHtml(f) {
+  const laneBadge = `<span class="badge badge-lane-${f.lane}">${esc(f.lane)}</span>`;
+  const sevKey = (f.severity || '').split(' ')[0].split('/')[0];
+  const sevBadge = f.severity ? `<span class="badge badge-sev-${esc(sevKey)}">${esc(f.severity)}</span>` : '';
+  const statusKey = (f.status || '').startsWith('FIXED') ? 'FIXED' : 'other';
+  const statusBadge = f.status ? `<span class="badge badge-status-${statusKey}">${esc(f.status)}</span>` : '';
+  const num = f.number ? `#${esc(f.number)}` : '';
+  const commit = f.commit ? `<a class="commit-link" href="${esc(GH_REPO)}/commit/${esc(f.commit)}" target="_blank" rel="noopener">commit ${esc(f.commit)}</a>` : '';
+  // Screenshots are never static files — they're gated behind
+  // /.netlify/functions/review-asset (same owner check as review-data.js).
+  // Each <a>/<img> here carries data-asset-path and is populated lazily by
+  // hydrateShots() with an authenticated blob: URL the first time this
+  // finding is expanded.
+  const shotTag = (s, kind) => `<a class="shot-link" data-asset-path="${kind}/${esc(s)}" href="#" target="_blank" rel="noopener"><img loading="lazy" data-asset-path="${kind}/${esc(s)}" alt="${kind}: ${esc(s)}"></a>`;
+  const shots = (f.before_shots.length || f.after_shots.length) ? `
+    <div class="shots">
+      ${f.before_shots.length ? `<div class="shot-col"><h4>Before</h4><div class="shot-thumbs">${f.before_shots.map(s => shotTag(s, 'shots')).join('')}</div></div>` : ''}
+      ${f.after_shots.length ? `<div class="shot-col"><h4>After</h4><div class="shot-thumbs">${f.after_shots.map(s => shotTag(s, 'shots-after')).join('')}</div></div>` : ''}
+    </div>` : '';
+  return `
+    <div class="finding" data-open="0" data-id="${esc(f.id)}">
+      <button class="finding-head" aria-expanded="false">
+        <span class="finding-num">${esc(num)}</span>
+        <span class="finding-title">${esc(f.title)}</span>
+        ${sevBadge}${statusBadge}
+        <span class="finding-caret">▸</span>
+      </button>
+      <div class="finding-body" hidden>
+        ${commit}
+        ${renderBodyMd(f.body_md)}
+        ${shots}
+      </div>
+    </div>`;
+}
+
+let ALL = [];
+let filters = { lane: null, severity: null, status: null, q: '' };
+
+function applyFilters() {
+  return ALL.filter(f => {
+    if (filters.lane && f.lane !== filters.lane) return false;
+    if (filters.severity && f.severity !== filters.severity) return false;
+    if (filters.status && f.status !== filters.status) return false;
+    if (filters.q) {
+      const hay = (f.title + ' ' + f.body_md).toLowerCase();
+      if (!hay.includes(filters.q.toLowerCase())) return false;
+    }
+    return true;
+  });
+}
+
+function renderList() {
+  const list = applyFilters();
+  const byLane = {};
+  for (const f of list) { (byLane[f.lane] = byLane[f.lane] || []).push(f); }
+  const laneOrder = ['UX', 'CODE', 'DATA'];
+  let html = '';
+  for (const lane of laneOrder) {
+    if (!byLane[lane] || !byLane[lane].length) continue;
+    html += `<div class="lane-group"><h2>${esc(lane)} lane — ${byLane[lane].length}</h2>${byLane[lane].map(findingHtml).join('')}</div>`;
+  }
+  document.getElementById('findings-list').innerHTML = html || '<div class="empty">No findings match this filter.</div>';
+  document.getElementById('count-line').textContent = `${list.length} of ${ALL.length} findings shown`;
+  document.querySelectorAll('.finding-head').forEach(btn => {
+    btn.onclick = () => {
+      const card = btn.closest('.finding');
+      const open = card.getAttribute('data-open') === '1';
+      card.setAttribute('data-open', open ? '0' : '1');
+      btn.setAttribute('aria-expanded', String(!open));
+      card.querySelector('.finding-body').hidden = open;
+      if (!open) hydrateShots(card);
+    };
+  });
+}
+
+// Lazy, authenticated image loading. Fetches only the assets inside the
+// finding panel just expanded (not all 11 up front), via the gated
+// review-asset function, and caches blob: URLs so re-expanding is instant
+// and re-fetches nothing.
+const shotBlobCache = new Map();
+async function hydrateShots(card) {
+  const nodes = card.querySelectorAll('img[data-asset-path]');
+  for (const img of nodes) {
+    const path = img.getAttribute('data-asset-path');
+    const link = card.querySelector(`a.shot-link[data-asset-path="${CSS.escape(path)}"]`);
+    if (shotBlobCache.has(path)) {
+      const url = shotBlobCache.get(path);
+      img.src = url;
+      if (link) link.href = url;
+      continue;
+    }
+    try {
+      const { data: { session } } = await sb.auth.getSession();
+      const res = await fetch(`/.netlify/functions/review-asset?path=${encodeURIComponent(path)}`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (!res.ok) continue;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      shotBlobCache.set(path, url);
+      img.src = url;
+      if (link) link.href = url;
+    } catch (_) { /* leave broken-image placeholder — non-fatal */ }
+  }
+}
+
+function chip(label, value, group) {
+  const active = filters[group] === value;
+  return `<button class="chip${active ? ' active' : ''}" data-group="${group}" data-value="${esc(value || '')}">${esc(label)}</button>`;
+}
+
+async function renderApp(data) {
+  ALL = data.findings;
+  app.innerHTML = `
+    <header>
+      <div class="row">
+        <h1>Findings — Pulse Zero adversarial review</h1>
+        <a class="back" href="/">&larr; Board</a>
+      </div>
+      <div class="sub">3-lane review, 2026-08-14 (UX / CODE / DATA-TRUTH). Ask anything about a finding in the board card's comments — a teammate answers within about a minute.</div>
+    </header>
+    <main>
+      <a class="demo-link" href="/review/demos/" id="demo-link">▶ Watch the narrated fix-wave demo</a>
+      <div class="toolbar" id="lane-chips">
+        ${chip('All lanes', null, 'lane')}
+        ${data.lanes.map(l => chip(l, l, 'lane')).join('')}
+      </div>
+      <div class="toolbar" id="sev-chips">
+        ${chip('All severities', null, 'severity')}
+        ${data.severities.map(s => chip(s, s, 'severity')).join('')}
+      </div>
+      <div class="toolbar">
+        <select id="status-select">
+          <option value="">All statuses</option>
+          ${data.statuses.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+        </select>
+        <input type="search" id="q" placeholder="Search findings…" />
+      </div>
+      <div class="count-line" id="count-line"></div>
+      <div id="findings-list"></div>
+    </main>`;
+
+  document.querySelectorAll('.chip').forEach(c => {
+    c.onclick = () => {
+      const group = c.dataset.group, value = c.dataset.value || null;
+      filters[group] = value;
+      document.querySelectorAll(`.chip[data-group="${group}"]`).forEach(x => x.classList.toggle('active', x.dataset.value === (value || '')));
+      renderList();
+    };
+  });
+  document.getElementById('status-select').onchange = (e) => { filters.status = e.target.value || null; renderList(); };
+  document.getElementById('q').oninput = (e) => { filters.q = e.target.value; renderList(); };
+  renderList();
+}
+
+async function loadFindings() {
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    const res = await fetch('/.netlify/functions/review-data', {
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || ('HTTP ' + res.status));
+    }
+    return await res.json();
+  } catch (e) {
+    app.innerHTML = `<main style="padding:40px 16px;"><p class="empty">Could not load findings (${esc(e.message)}).</p></main>`;
+    return null;
+  }
+}
+
+async function boot() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session && isOwner(session)) {
+    const data = await loadFindings();
+    if (data) renderApp(data);
+  } else if (session) {
+    renderWrongAccount(session);
+  } else {
+    renderLogin();
+  }
+  sb.auth.onAuthStateChange(async (_event, session) => {
+    if (session && isOwner(session)) {
+      const data = await loadFindings();
+      if (data) renderApp(data);
+    } else if (session) {
+      renderWrongAccount(session);
+    } else {
+      renderLogin();
+    }
+  });
+}
+boot();
+</script>
+</body>
+</html>

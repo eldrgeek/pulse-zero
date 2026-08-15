@@ -119,6 +119,51 @@ path, a real typed action. Author to that.
 
 **Tower** (`~/Projects/_estate/specs/tower-steward-v0.md`) is the steward persona that gatekeeps the board. Cards that aren't genuinely Mike-gated get bounced with reason *"You know what to do, don't you?"* and land in the collapsed **Bounced (RSI)** section on the board — visible, not deleted, so the bounce rate feeds back into fleet norms (the RSI loop).
 
+### Report cards: evidence, inspect, drill, attended (R2b, 2026-08-15)
+
+Canon: `~/Projects/SOMA/specs/handshake-protocol-v1.md` §R2b — *"the board is
+a console, not a message board."* For `verdict`/`brief` report cards this adds
+four hard requirements, named against a real anti-pattern Mike hit live:
+card `pulse-zero-fixed-20260814` said *"All 43 findings across UX/CODE/DATA
+fixed or reasoned"* with nothing behind it — his reply was *"How do I look
+at the 43 findings?"* There was no way. There is now:
+
+1. **Evidence** — a recorded demonstration (rrweb replay), not a described
+   one. `_estate/bin/demo-record` now accepts `--narrate "text"` (repeatable,
+   or a `steps.json` entry's `"narrate"` field) to burn in a subtitle track
+   synced to the replay's own clock, and `--tts` to voice those lines via
+   the estate's ElevenLabs stack — **always a stock premade voice
+   (`--voice-id`, default Brian `nPczCjzI2devNBz1zQrb`), never a cloned
+   human voice.** See `public/review/demos/` for a worked example.
+2. **One-click inspect + unlimited drill-down** — a bare count is the named
+   anti-pattern. Every claimed finding/fix needs a real path to its detail:
+   the finding's own text, its FIXED/WONT-FIX status, a commit reference,
+   before/after screenshots. `public/review/` is the reference
+   implementation for this repo's own adversarial-review reports (built by
+   `review/build-findings.py` from `review/*-FINDINGS-*.md` into a
+   filterable, expandable findings browser) — a report card's `--url` should
+   point at a page like this, not at a summary paragraph.
+3. **Auth, server-side, not just client-side** — a report page that "names
+   internals" sits behind the same owner gate as the board, but a static
+   JSON/asset file under `public/` is reachable regardless of what the page's
+   JS decides to render. `public/review/` proves the pattern: the findings
+   index and every screenshot live outside `public/` entirely
+   (`netlify/functions/review-data/`, `netlify/functions/review-assets/`)
+   and are served only by `netlify/functions/review-data.js` /
+   `review-asset.js`, which independently verify the caller's Supabase
+   bearer token server-side before returning anything. An anonymous request
+   gets 401 with no data.
+4. **Attended** — the card's own comment thread answers real questions about
+   the linked report, not just its summary. `_estate/bin/pulse_common.py`'s
+   `build_answer_prompt()` now injects a "read the report before answering"
+   instruction whenever a `verdict`/`brief` card carries a `payload.url` (with
+   a Pulse-Zero-specific hint to read `review/*-FINDINGS-*.md` directly off
+   disk rather than trying to fetch the auth-gated page anonymously) — so a
+   comment like *"how do I look at the 43 findings?"* gets answered from the
+   actual findings, verified live 2026-08-14/15 against a disposable test
+   card (instant webhook path, reply landed in ~57s, correctly cited the
+   specific finding asked about).
+
 ## Executable queue v1 — RETIRED-UNBUILT (2026-08-14)
 
 The bounded-queue slice described in `EXECUTABLE-QUEUE-PLAN-2026-08-01.md`
