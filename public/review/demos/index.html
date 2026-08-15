@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Pulse Zero — Narrated demos</title>
+<script src="/vendor/supabase-js/supabase.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #0b0d10; color: #f0f2f4; min-height: 100vh; min-height: 100dvh; }
+  @media (prefers-color-scheme: light) { body { background: #f4f5f7; color: #14171a; } }
+  header { position: sticky; top: 0; padding: 14px 16px; background: rgba(20,22,26,0.92); backdrop-filter: blur(8px); border-bottom: 1px solid #2a2d31; z-index: 10; }
+  @media (prefers-color-scheme: light) { header { background: rgba(244,245,247,0.92); border-bottom-color: #dcdfe3; } }
+  header .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  header a.back { color: inherit; opacity: 0.6; font-size: 13px; text-decoration: none; }
+  main { max-width: 720px; margin: 0 auto; padding: 12px 12px 80px; }
+  .demo-card { background: #16181b; border: 1px solid #26292d; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+  @media (prefers-color-scheme: light) { .demo-card { background: #fff; border-color: #e3e5e8; } }
+  .demo-card h2 { font-size: 15px; margin: 0 0 6px; }
+  .demo-card .cap { font-size: 13.5px; opacity: 0.75; margin: 0 0 10px; line-height: 1.4; }
+  .demo-card .meta { font-size: 12px; opacity: 0.55; margin: 0 0 12px; }
+  .btn-play { display: inline-flex; align-items: center; gap: 6px; background: #2f6fed; color: #fff; border: none; border-radius: 10px; padding: 10px 16px; font-size: 13.5px; font-weight: 650; cursor: pointer; min-height: 44px; }
+  .btn-play:disabled { opacity: 0.5; cursor: default; }
+  .empty { text-align: center; opacity: 0.5; padding: 60px 20px; font-size: 15px; }
+  #player-wrap { display: none; margin: 0 0 16px; border: 1px solid #26292d; border-radius: 12px; overflow: hidden; background: #000; }
+  #player-wrap.open { display: block; }
+  #player-wrap iframe { width: 100%; height: 620px; border: none; display: block; }
+  .login { display: flex; align-items: center; justify-content: center; min-height: 100vh; min-height: 100dvh; padding: 24px; }
+  .login-box { max-width: 360px; width: 100%; text-align: center; }
+  .login-box input { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #35383d; background: #16181b; color: #f0f2f4; font-size: 15px; margin: 16px 0 10px; }
+  @media (prefers-color-scheme: light) { .login-box input { background: #fff; color: #14171a; border-color: #cfd3d8; } }
+  .google-btn, .btn-magic { width: 100%; background: #2f6fed; color: white; padding: 12px; border: none; border-radius: 10px; font-size: 15px; font-weight: 650; cursor: pointer; min-height: 44px; }
+  .google-btn { background: #fff; color: #14171a; border: 1px solid #cfd3d8; display: flex; align-items: center; justify-content: center; gap: 10px; }
+  .login-sep { margin: 14px 0; opacity: 0.5; font-size: 12.5px; }
+  .muted { opacity: 0.6; font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const SUPABASE_URL = 'https://omfwcodoimjmbrhssvfl.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_vi2qDWjozUJ5mi9dwirkLA_rj6UaqLf';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const app = document.getElementById('app');
+const OWNER_EMAILS = ['mw@mike-wolf.com', 'mw.personalmail@gmail.com'];
+const sessionEmail = (s) => (s?.user?.email || '').toLowerCase();
+const isOwner = (s) => OWNER_EMAILS.includes(sessionEmail(s));
+function esc(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+const GOOGLE_MARK = `<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#4285F4" d="M45.1 24.5c0-1.6-.1-2.8-.4-4H24v7.3h12.1c-.2 2-1.6 5-4.5 7l6.9 5.4c4.1-3.8 6.6-9.4 6.6-15.7z"/><path fill="#34A853" d="M24 46c5.9 0 10.9-2 14.5-5.3l-6.9-5.4c-1.9 1.3-4.4 2.2-7.6 2.2-5.8 0-10.7-3.8-12.5-9.1l-7.1 5.5C8.1 41.1 15.4 46 24 46z"/><path fill="#FBBC05" d="M11.5 28.4c-.5-1.4-.7-2.9-.7-4.4s.3-3 .7-4.4l-7.1-5.5C2.9 17 2 20.4 2 24s.9 7 2.4 9.9l7.1-5.5z"/><path fill="#EA4335" d="M24 10.2c4.1 0 6.9 1.8 8.5 3.3l6.2-6C34.9 4 29.9 2 24 2 15.4 2 8.1 6.9 4.4 14.1l7.1 5.5C13.3 14.3 18.2 10.2 24 10.2z"/></svg>`;
+
+function renderLogin() {
+  app.innerHTML = `<div class="login"><div class="login-box">
+    <h1 style="margin-bottom:4px;">Pulse Zero — Narrated demos</h1>
+    <p class="muted">Sign in with the board's owner account to view.</p>
+    <button id="google" class="google-btn">${GOOGLE_MARK}Continue with Google</button>
+    <div class="login-sep">or</div>
+    <input id="email" type="email" placeholder="mw@mike-wolf.com" autocomplete="email" />
+    <button id="send" class="btn-magic">Send magic link</button>
+    <p class="muted" id="status" style="margin-top:12px;"></p>
+  </div></div>`;
+  document.getElementById('google').onclick = async () => {
+    const status = document.getElementById('status');
+    status.textContent = 'Opening Google...';
+    const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + '/review/demos/' } });
+    if (error) status.textContent = 'Error: ' + error.message;
+  };
+  document.getElementById('send').onclick = async () => {
+    const email = document.getElementById('email').value.trim();
+    const status = document.getElementById('status');
+    if (!email) { status.textContent = 'Enter an email.'; return; }
+    status.textContent = 'Sending...';
+    const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + '/review/demos/' } });
+    status.textContent = error ? 'Error: ' + error.message : 'Check your email for the link.';
+  };
+}
+function renderWrongAccount(session) {
+  app.innerHTML = `<div class="login"><div class="login-box">
+    <h1 style="margin-bottom:4px;">Pulse Zero — Narrated demos</h1>
+    <p class="muted">Signed in as <strong>${esc(session.user.email || 'unknown')}</strong>, which isn't on this board.</p>
+    <button id="signout" class="btn-magic" style="margin-top:18px;">Sign out and try another account</button>
+  </div></div>`;
+  document.getElementById('signout').onclick = () => sb.auth.signOut();
+}
+
+function fmtDuration(ms) { if (!ms) return ''; const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+
+async function authedFetch(path) {
+  const { data: { session } } = await sb.auth.getSession();
+  return fetch(path, { headers: { Authorization: `Bearer ${session.access_token}` } });
+}
+
+async function renderApp() {
+  app.innerHTML = `
+    <header>
+      <div class="row">
+        <h1>Narrated demos</h1>
+        <a class="back" href="/review/">&larr; Findings</a>
+      </div>
+    </header>
+    <main>
+      <div id="player-wrap"><iframe id="player-frame" title="demo player"></iframe></div>
+      <div id="list"></div>
+    </main>`;
+  const listEl = document.getElementById('list');
+  listEl.innerHTML = '<p class="muted">Loading…</p>';
+  let demos = [];
+  try {
+    const res = await authedFetch('/.netlify/functions/review-demo?list=1');
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || ('HTTP ' + res.status));
+    demos = (await res.json()).demos || [];
+  } catch (e) {
+    listEl.innerHTML = `<p class="empty">Could not load demos (${esc(e.message)}).</p>`;
+    return;
+  }
+  if (!demos.length) {
+    listEl.innerHTML = '<p class="empty">No narrated demos yet.</p>';
+    return;
+  }
+  listEl.innerHTML = demos.map((d) => `
+    <div class="demo-card" data-slug="${esc(d.slug)}">
+      <h2>${esc(d.slug)}</h2>
+      <p class="cap">${esc(d.caption || '')}</p>
+      <p class="meta">${esc(d.date || '')} · ${fmtDuration(d.durationMs)} · ${d.narration ? d.narration.cueCount + ' narrated step(s)' + (d.narration.voiced ? ', voiced' : '') : ''}</p>
+      <button class="btn-play">▶ Play</button>
+    </div>`).join('');
+  document.querySelectorAll('.demo-card .btn-play').forEach((btn) => {
+    btn.onclick = async () => {
+      const slug = btn.closest('.demo-card').dataset.slug;
+      btn.disabled = true;
+      btn.textContent = 'Loading…';
+      try {
+        const res = await authedFetch(`/.netlify/functions/review-demo?slug=${encodeURIComponent(slug)}`);
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || ('HTTP ' + res.status));
+        const blob = await res.blob();
+        const url = URL.createObjectURL(new Blob([blob], { type: 'text/html' }));
+        document.getElementById('player-frame').src = url;
+        document.getElementById('player-wrap').classList.add('open');
+        document.getElementById('player-wrap').scrollIntoView({ behavior: 'smooth' });
+      } catch (e) {
+        alert('Could not load demo: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '▶ Play';
+      }
+    };
+  });
+}
+
+async function boot() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session && isOwner(session)) renderApp();
+  else if (session) renderWrongAccount(session);
+  else renderLogin();
+  sb.auth.onAuthStateChange(async (_e, session) => {
+    if (session && isOwner(session)) renderApp();
+    else if (session) renderWrongAccount(session);
+    else renderLogin();
+  });
+}
+boot();
+</script>
+</body>
+</html>
