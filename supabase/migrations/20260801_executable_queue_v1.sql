@@ -1,5 +1,13 @@
 -- Pulse Zero executable queue v1 (additive, feature flagged)
 --
+-- SUPERSEDED 2026-08-16 (frictionless-console-v1 / WQ-301 Slice 1, Mike-ratified
+-- card 913e36c5-7253-4341-a0a3-b45e499f554f). Never apply the unflagged
+-- statement triggers described below — they fire on every INSERT/UPDATE on
+-- pulse_cards including legacy producers (fact 1 just below), which is exactly
+-- the blast radius frictionless-console-v1.md §4 flags as deferred, not
+-- adopted. The pieces worth salvaging later (the enqueue RPC + gate taxonomy)
+-- are noted in that spec's §4; this file stays as a reference artifact only.
+--
 -- This migration is intentionally an artifact only in this change. Do not run it
 -- against the shared project without a backup, shadow-ranking review, and Mike's
 -- explicit migration approval. Existing rows default to queue_state=legacy and

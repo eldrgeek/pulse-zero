@@ -571,6 +571,23 @@ def comment(args, key, url):
     return c
 
 
+def run_event(args, key, url):
+    """Append a pulse_run_events narration row — the ratify strip's live
+    progress/receipt line. `start` is written deterministically by
+    card-answer-webhook.js before any worker runs; workers post `progress`
+    and `receipt` (or `error`) rows as they act on the answer, and pulse-act
+    --selfcheck's orphan check treats a card with no `receipt`/`error` event
+    within its window as a zombie dispatch to retry."""
+    if not args.text or not args.text.strip():
+        sys.stderr.write("error: --text is required for run-event\n")
+        sys.exit(1)
+    body = {"card_id": args.id, "run_id": args.run_id, "kind": args.kind, "text": args.text}
+    result = sb_request("POST", "pulse_run_events", key, url, body=body)
+    r = result[0] if isinstance(result, list) else result
+    print(f"run-event {args.kind} on card {args.id}: {r.get('id')}")
+    return r
+
+
 def sync_answers_to_board(rows, key, url):
     """Mirror cards into SOMA/board/inbox/ for the passive-file pickup path.
     A card is synced if it's no longer open (answered/bounced/resolved/
@@ -737,6 +754,12 @@ def main():
     cm.add_argument("--body", required=True)
     cm.add_argument("--author", default="mike", help="default 'mike' — this is normally added via the board UI")
 
+    re_ = sub.add_parser("run-event")
+    re_.add_argument("--id", required=True, help="card id")
+    re_.add_argument("--kind", required=True, choices=["start", "progress", "receipt", "stalled", "error"])
+    re_.add_argument("--text", required=True)
+    re_.add_argument("--run-id", dest="run_id", help="the run_id the webhook stamped on this card's start event, if known")
+
     p.add_argument("--list-open", action="store_true")
     p.add_argument("--list-answers", action="store_true")
     p.add_argument("--list-bounced", action="store_true")
@@ -770,6 +793,8 @@ def main():
         resolve(args, key, url)
     elif args.type == "comment":
         comment(args, key, url)
+    elif args.type == "run-event":
+        run_event(args, key, url)
     elif args.type:
         push(args, key, url)
     else:
