@@ -312,6 +312,56 @@
   #talk-btn.start { background: #2f6fed; color: #fff; }
   #talk-btn.end { background: #3a1414; color: #ff8080; }
   #talk-bar[hidden] { display: none; }
+
+  /* WQ-301 slice 2 (2026-08-17): v2 keyed-reconciliation board. Additive
+     only — every rule below is scoped to v2-only classes/ids so the legacy
+     (?v2 absent) render path is visually untouched. */
+  .v2-badge {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.05em; vertical-align: middle;
+    padding: 2px 6px; border-radius: 5px; margin-left: 6px; background: #2f6fed; color: #fff;
+  }
+  .v2-stale {
+    font-size: 12px; font-weight: 600; color: #e8b545; background: #3a2e12;
+    padding: 4px 8px; border-radius: 7px; margin-left: 8px;
+  }
+  .v2-new-tray { max-width: 640px; margin: 0 auto; padding: 0 12px; }
+  .v2-new-tray button {
+    width: 100%; margin: 10px 0 0; font-size: 13.5px; font-weight: 650;
+    background: #1c2333; color: #a8c4ff; border: 1px solid #2f3f66; border-radius: 10px;
+    padding: 10px 14px; cursor: pointer;
+  }
+  .run-status-line {
+    font-size: 13.5px; font-weight: 560; margin: 0; line-height: 1.4;
+    padding: 5px 10px; border-radius: 8px; display: inline-block;
+    background: #1c2333; color: #a8c4ff; white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .v2-run-chip, .v2-done-ribbon {
+    background: #16181b; border: 1px solid #26292d; border-radius: 14px;
+    padding: 14px 16px; margin-bottom: 10px; animation: in 0.2s ease;
+  }
+  @media (prefers-color-scheme: light) {
+    .v2-run-chip, .v2-done-ribbon { background: #fff; border-color: #e3e5e8; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+  }
+  .v2-run-chip .title { margin-bottom: 6px; }
+  .v2-run-chip .v2-drill-toggle, .v2-done-line {
+    display: block; width: 100%; text-align: left; background: none; border: none;
+    color: inherit; font-size: 13px; font-weight: 600; opacity: 0.75; cursor: pointer;
+    padding: 8px 0 0; text-decoration: underline; text-underline-offset: 2px;
+  }
+  .v2-done-line { opacity: 0.9; text-decoration: none; font-size: 14.5px; }
+  .v2-done-ribbon.v2-done-error .v2-done-line { color: #ff9a8a; }
+  .v2-run-drill { margin-top: 8px; padding-top: 8px; border-top: 1px solid #26292d; }
+  @media (prefers-color-scheme: light) { .v2-run-drill { border-top-color: #e3e5e8; } }
+  .v2-run-timeline { list-style: none; margin: 0; padding: 0; font-size: 12.5px; line-height: 1.6; }
+  .v2-run-timeline li { padding: 3px 0; overflow-wrap: anywhere; }
+  .v2-run-kind {
+    display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase;
+    padding: 1px 6px; border-radius: 5px; margin-right: 4px; background: #26292d; color: #a8b0ba;
+  }
+  .v2-run-kind-receipt { background: #12302e; color: #4ecdc4; }
+  .v2-run-kind-error { background: #3a1414; color: #ff9a8a; }
+  .v2-run-kind-stalled { background: #3a2e12; color: #e8b545; }
+  .v2-run-ts { opacity: 0.55; }
 </style>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
@@ -564,6 +614,14 @@ async function renderLogin() {
 function cardKindLabel(t) { return t.toUpperCase(); }
 
 const YESHIE_FLAG = new URLSearchParams(location.search).get('yeshie') === '1';
+
+// WQ-301 slice 2 (2026-08-17): keyed per-card reconciliation board, parallel
+// to the legacy full-rebuild renderer for a trust day before cutover. See
+// SOMA/specs/frictionless-console-v1.md §"Context mechanics". board.js is a
+// plain classic script loaded after this one — it shares this global scope
+// (sb, esc, renderCard, answerCard, etc.) the same way pulse-actions.js's
+// PulseActions is already shared, no import/export machinery.
+const V2_FLAG = new URLSearchParams(location.search).get('v2') === '1';
 
 function showOverlay(html) {
   const backdrop = document.createElement('div');
@@ -911,7 +969,7 @@ async function fetchExistingTypedRun(idempotencyKey) {
   return error ? null : data;
 }
 
-async function pollTypedActionCommand(c, action, commandId) {
+async function pollTypedActionCommand(c, action, commandId, onDone = loadCards) {
   const pollKey = String(commandId);
   if (uiState.actionPollers.has(pollKey)) return;
   uiState.actionPollers.add(pollKey);
@@ -933,7 +991,7 @@ async function pollTypedActionCommand(c, action, commandId) {
       refreshTypedActionRows(c, action, data);
       const phase = PulseActions.runPhase(data);
       if (phase === 'verified') {
-        if (action.completion.close_card) await maybeResolveTypedActionCard(c);
+        if (action.completion.close_card) await maybeResolveTypedActionCard(c, onDone);
         return;
       }
       if (phase === 'failed') return;
@@ -944,7 +1002,7 @@ async function pollTypedActionCommand(c, action, commandId) {
   }
 }
 
-async function maybeResolveTypedActionCard(c) {
+async function maybeResolveTypedActionCard(c, onDone = loadCards) {
   if (uiState.resolvingCards.has(c.id)) return;
   const parsed = typedActions(c);
   if (parsed.errors.length || !parsed.actions.length) return;
@@ -959,19 +1017,19 @@ async function maybeResolveTypedActionCard(c) {
       resolved_note: 'All requested actions completed with verified receipts.',
       answered_at: new Date().toISOString(),
     }).eq('id', c.id).eq('status', 'open');
-    if (!error) loadCards();
+    if (!error) onDone();
   } finally {
     uiState.resolvingCards.delete(c.id);
   }
 }
 
-async function runTypedCardAction(c, action, btn) {
+async function runTypedCardAction(c, action, btn, onDone = loadCards) {
   if (uiState.actionRunError) return;
   btn.disabled = true;
   const existing = typedActionRun(c, action);
   const existingPhase = PulseActions.runPhase(existing);
   if (existing && ['queued', 'running', 'waiting_human'].includes(existingPhase)) {
-    await pollTypedActionCommand(c, action, existing.id);
+    await pollTypedActionCommand(c, action, existing.id, onDone);
     return;
   }
   if (existingPhase === 'verified') return;
@@ -1008,25 +1066,25 @@ async function runTypedCardAction(c, action, btn) {
   }
   uiState.actionRuns.set(PulseActions.actionRunKey(c.id, action), run);
   refreshTypedActionRows(c, action, run);
-  await pollTypedActionCommand(c, action, run.id);
+  await pollTypedActionCommand(c, action, run.id, onDone);
 }
 
-function wireTypedCardActions(div, c) {
+function wireTypedCardActions(div, c, onDone = loadCards) {
   const parsed = typedActions(c);
   if (parsed.errors.length || c.status !== 'open') return;
   parsed.actions.forEach(action => {
     const btn = [...div.querySelectorAll('[data-typed-action]')]
       .find(candidate => candidate.dataset.typedAction === action.id);
     if (!btn) return;
-    btn.onclick = () => runTypedCardAction(c, action, btn);
+    btn.onclick = () => runTypedCardAction(c, action, btn, onDone);
     const run = typedActionRun(c, action);
     if (run && ['queued', 'running', 'waiting_human'].includes(PulseActions.runPhase(run))) {
-      pollTypedActionCommand(c, action, run.id);
+      pollTypedActionCommand(c, action, run.id, onDone);
     }
   });
   if (parsed.actions.some(action => action.completion.close_card) &&
       parsed.actions.every(action => PulseActions.runPhase(typedActionRun(c, action)) === 'verified')) {
-    maybeResolveTypedActionCard(c);
+    maybeResolveTypedActionCard(c, onDone);
   }
 }
 
@@ -1160,7 +1218,7 @@ function flagBlocked(wrap, url) {
   wrap.appendChild(note);
 }
 
-async function bounceByMike(c) {
+async function bounceByMike(c, onDone = loadCards) {
   // CODE#7 (2026-08-14): guard on status=open, mirroring the one write in
   // this file that already got this right (maybeResolveTypedActionCard's
   // .eq('status','open')). Without it, a Mike-vs-nightly-drain race (or a
@@ -1173,7 +1231,7 @@ async function bounceByMike(c) {
   }).eq('id', c.id).eq('status', 'open').select();
   if (error) { alert('Failed: ' + error.message); return; }
   if (!data || !data.length) { alert('This card already changed — reloading.'); loadCards(); return; }
-  loadCards();
+  onDone();
 }
 
 // ── Snooze ──────────────────────────────────────────────────────────
@@ -1203,19 +1261,19 @@ function snoozePresets() {
   ];
 }
 
-async function snoozeCard(id, until) {
+async function snoozeCard(id, until, onDone = loadCards) {
   const { error } = await sb.from('pulse_cards').update({ snoozed_until: until.toISOString() }).eq('id', id);
   if (error) { alert('Failed: ' + error.message); return; }
-  loadCards();
+  onDone();
 }
 
-async function unsnoozeCard(id) {
+async function unsnoozeCard(id, onDone = loadCards) {
   const { error } = await sb.from('pulse_cards').update({ snoozed_until: null }).eq('id', id);
   if (error) { alert('Failed: ' + error.message); return; }
-  loadCards();
+  onDone();
 }
 
-function openSnoozeMenu(c) {
+function openSnoozeMenu(c, onDone = loadCards) {
   const presets = snoozePresets();
   const buttons = presets.map((pr, i) =>
     `<button class="btn-secondary" data-snooze-idx="${i}">${esc(pr.label)}</button>`
@@ -1225,7 +1283,7 @@ function openSnoozeMenu(c) {
     btn.onclick = async () => {
       const pr = presets[Number(btn.dataset.snoozeIdx)];
       backdrop.remove();
-      await snoozeCard(c.id, pr.at);
+      await snoozeCard(c.id, pr.at, onDone);
     };
   });
 }
@@ -1257,7 +1315,7 @@ function looksLikeSecret(text) {
     /^[A-Za-z0-9]{16}$/.test(compact);
 }
 
-async function postComment(cardId, body) {
+async function postComment(cardId, body, onDone = loadCards) {
   if (looksLikeSecret(body)) {
     alert('That looks like a credential. It was not sent. Keep it on the Mac clipboard and use the task’s Install & verify button.');
     return;
@@ -1270,7 +1328,7 @@ async function postComment(cardId, body) {
   // whatever latency the subscription round-trip adds.
   uiState.pendingComment.set(cardId, nowIso);
   uiState.openComments.add(cardId);
-  loadCards();
+  onDone();
 }
 
 // A card is "pending" if Mike's last comment on it is newer than any
@@ -1307,7 +1365,7 @@ function renderComments(c) {
     </div>`;
 }
 
-function wireComments(div, c) {
+function wireComments(div, c, onDone = loadCards) {
   const toggle = div.querySelector('[data-action="toggle-comments"]');
   const body = div.querySelector('.comment-body');
   if (!toggle || !body) return;
@@ -1336,7 +1394,7 @@ function wireComments(div, c) {
     const val = input.value.trim();
     if (!val) return;
     uiState.commentDrafts.delete(c.id);
-    postComment(c.id, val);
+    postComment(c.id, val, onDone);
   };
   send.onclick = submit;
   // Enter sends (matches the old single-line input's behavior); Shift+Enter
@@ -1353,7 +1411,7 @@ function focusPulseThread(div, c) {
   input.focus();
 }
 
-function renderCard(c) {
+function renderCard(c, onDone = loadCards) {
   const p = c.payload || {};
   const answered = c.status !== 'open';
   // CODE#4 (2026-08-14): scheme-check every payload.url ONE TIME per render,
@@ -1454,8 +1512,8 @@ function renderCard(c) {
         if (action === 'guide') { guideMeSteps(c.yeshie_steps); return; }
         if (action === 'yeshie-run') { await runYeshieTask(c.yeshie_task, btn); return; }
         if (action === 'ask-pulse') { focusPulseThread(div, c); return; }
-        if (action === 'not-mine') { btn.disabled = true; await bounceByMike(c); return; }
-        if (action === 'snooze') { openSnoozeMenu(c); return; }
+        if (action === 'not-mine') { btn.disabled = true; await bounceByMike(c, onDone); return; }
+        if (action === 'snooze') { openSnoozeMenu(c, onDone); return; }
         if (action === 'other' || action === 'change') {
           const input = div.querySelector('.textresp');
           input.style.display = 'block';
@@ -1463,7 +1521,7 @@ function renderCard(c) {
           input.onkeydown = async (e) => {
             if (e.key === 'Enter' && input.value.trim()) {
               div.querySelectorAll('.actions button').forEach(b => { b.disabled = true; });
-              await answerCard(c, { action_id: action, value: input.value.trim() });
+              await answerCard(c, { action_id: action, value: input.value.trim() }, onDone);
             }
           };
           return;
@@ -1475,13 +1533,13 @@ function renderCard(c) {
         // double-tap on a decision option used to fire two PATCHes with no
         // guard and no UI signal that anything changed on the second tap.
         div.querySelectorAll('.actions button').forEach(b => { b.disabled = true; });
-        await answerCard(c, { action_id: action, value });
+        await answerCard(c, { action_id: action, value }, onDone);
       };
     });
   }
   wireSteps(div, c);
-  wireTypedCardActions(div, c);
-  wireComments(div, c);
+  wireTypedCardActions(div, c, onDone);
+  wireComments(div, c, onDone);
   if (c.type === 'brief') wireDrill(div, `brief:${c.id}`);
   return div;
 }
@@ -1495,7 +1553,7 @@ function renderBouncedCard(c) {
   return div;
 }
 
-async function answerCard(cardOrId, answer) {
+async function answerCard(cardOrId, answer, onDone = loadCards) {
   const card = typeof cardOrId === 'object' ? cardOrId : null;
   const id = card ? card.id : cardOrId;
   // CODE#5 (2026-08-14): removed the queue_state==='queued' RPC branch —
@@ -1515,7 +1573,7 @@ async function answerCard(cardOrId, answer) {
   }).eq('id', id).eq('status', 'open').select();
   if (error) { alert('Failed: ' + error.message); return; }
   if (!data || !data.length) { alert('This card already changed — reloading.'); loadCards(); return; }
-  loadCards();
+  onDone();
 }
 
 
@@ -1713,6 +1771,14 @@ async function reloadCardsPreservingScroll() {
 }
 
 async function renderApp(session) {
+  // v2 is a fully parallel render path (own DOM shell, own realtime
+  // subscription, own reconciliation) — never falls through to the legacy
+  // innerHTML='' rebuild below. Legacy stays byte-identical when the flag is
+  // absent.
+  if (V2_FLAG && typeof renderAppV2 === 'function') {
+    await renderAppV2(session);
+    return;
+  }
   app.innerHTML = `
     <header><h1>Pulse Zero</h1><span class="count" id="count"></span></header>
     <main id="cards"><div class="empty">Loading...</div></main>`;
@@ -1726,6 +1792,7 @@ async function renderApp(session) {
 }
 
 function stopCardsRealtime() {
+  if (typeof stopCardsRealtimeV2 === 'function') stopCardsRealtimeV2();
   if (!cardsChannel) return;
   const oldChannel = cardsChannel;
   cardsChannel = null;
@@ -1770,6 +1837,13 @@ async function boot() {
 }
 boot();
 </script>
+
+<!-- WQ-301 slice 2: v2 keyed-reconciliation board, parallel path behind
+     ?v2=1. Loaded after the main script above so it shares its global scope
+     (sb, esc, renderCard, answerCard, ...) — same convention pulse-actions.js
+     already uses for PulseActions. Must stay after boot()'s <script>, not
+     before: it reads consts (sb, APP_ID, ...) declared there. -->
+<script src="/board.js"></script>
 
 <script type="module">
   import { Conversation } from 'https://esm.sh/@elevenlabs/client@latest';

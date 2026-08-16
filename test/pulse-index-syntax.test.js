@@ -10,5 +10,5 @@ test('Pulse board main script compiles with typed action wiring present', () => 
   assert(match, 'main Pulse script was not found');
   assert.doesNotThrow(() => new Function(match[1]));
   assert(match[1].includes('cardActionsPanel(c)'));
-  assert(match[1].includes('wireTypedCardActions(div, c)'));
+  assert(match[1].includes('wireTypedCardActions(div, c, onDone)'));
 });
