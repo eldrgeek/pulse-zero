@@ -6,6 +6,18 @@
 <title>Pulse Zero</title>
 <script src="/vendor/supabase-js/supabase.js"></script>
 <script src="/pulse-actions.js"></script>
+<!-- WQ-301 slice 2: v2 keyed-reconciliation board, parallel path behind
+     ?v2=1. Must load and define renderAppV2/stopCardsRealtimeV2 BEFORE the
+     main inline script's boot() call below — boot() awaits
+     sb.auth.getSession(), which can resolve via a microtask flushed before
+     the parser even reaches a script tag placed after it, so a same-page
+     "load after" ordering races renderApp()'s `typeof renderAppV2 ===
+     'function'` check and loses. board.js's own top-level code only
+     *references* sb/esc/renderCard/etc. inside function bodies (never at
+     parse time), so loading it first is safe even though those globals
+     don't exist yet — they only need to exist once a function actually
+     runs, well after the whole page has parsed. -->
+<script src="/board.js"></script>
 <link rel="stylesheet" href="/vendor/soma-feedback/soma-feedback.css">
 <style>
   :root { color-scheme: light dark; }
@@ -1837,13 +1849,6 @@ async function boot() {
 }
 boot();
 </script>
-
-<!-- WQ-301 slice 2: v2 keyed-reconciliation board, parallel path behind
-     ?v2=1. Loaded after the main script above so it shares its global scope
-     (sb, esc, renderCard, answerCard, ...) — same convention pulse-actions.js
-     already uses for PulseActions. Must stay after boot()'s <script>, not
-     before: it reads consts (sb, APP_ID, ...) declared there. -->
-<script src="/board.js"></script>
 
 <script type="module">
   import { Conversation } from 'https://esm.sh/@elevenlabs/client@latest';
