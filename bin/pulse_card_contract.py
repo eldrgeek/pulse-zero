@@ -48,6 +48,12 @@ stores it as ``title``. Three names, one field. This module validates the board
 payload — the only layer the renderer and Mike actually see
 (``pulse-zero/public/index.html`` renders ``p.artifact_name`` / ``p.summary``).
 
+Addressee (2026-08-27) is optional routing metadata on that payload
+(``payload.addressee``, CLI ``--to``). It is who should act. It is not
+``created_by`` / ``--source`` (who posted) and it is not a second owner
+login — the board stays Mike-gated. Omitted means Mike. See
+``bin/pulse_seats.py`` and ``ADDRESSEES.md``.
+
 Board standard: ``~/Projects/pulse-zero/README.md``.
 """
 
@@ -91,16 +97,19 @@ REQUIRED_FIELDS = {
 }
 
 # Everything else the payload may legitimately carry, per type.
+# addressee (2026-08-27) is routing metadata for a named seat (default Mike
+# when omitted) — not a second owner login, and not provenance (that stays
+# created_by / --source). See bin/pulse_seats.py and ADDRESSEES.md.
 OPTIONAL_FIELDS = {
     "action": ("why", "steps", "url", "step_actions", "actions", "actions_version",
-               "escalation_day", "orig_key", "status_line"),
-    "decision": ("why", "url", "escalation_day", "orig_key"),
-    "verdict": ("why", "escalation_day", "orig_key"),
+               "escalation_day", "orig_key", "status_line", "addressee"),
+    "decision": ("why", "url", "escalation_day", "orig_key", "addressee"),
+    "verdict": ("why", "escalation_day", "orig_key", "addressee"),
     # full_text (2026-08-13, Mike's roundup-copy fix): `lines` is the short,
     # always-visible digest (~2-second scan); `full_text` is the complete
     # fleet-record body, rendered behind a collapsed-by-default drill-down in
     # the board so the card itself never dumps the long form on Mike.
-    "brief": ("escalation_day", "orig_key", "full_text"),
+    "brief": ("escalation_day", "orig_key", "full_text", "addressee"),
 }
 
 # Declared JSON type of each REQUIRED field, so a wrong type is a contract
@@ -142,6 +151,7 @@ FLAG_FOR_FIELD = {
     "url": "--url",
     "why": "--why",
     "steps": "--steps",
+    "addressee": "--to",
 }
 
 # List-valued payload fields — "present" means non-empty, not merely not-None.
@@ -236,6 +246,37 @@ def validate_url_scheme(payload):
         )
 
 
+def validate_addressee(payload):
+    """Optional payload.addressee is routing metadata, not provenance.
+
+    Omitted/blank → implicit Mike (existing cards stay valid). A present
+    value must be a named seat in pulse_seats (rook is the first grok-bot
+    seat). Canonicalizes in place so stored slugs are lowercase registry
+    names. Does not talk to Discord; a missing Rook Discord id is not a
+    contract violation.
+    """
+    raw = payload.get("addressee")
+    if not is_present(raw):
+        # Drop blank strings so consumers can treat "missing" uniformly.
+        if "addressee" in payload and not (isinstance(raw, str) and raw.strip()):
+            payload.pop("addressee", None)
+        return
+
+    # Imported here so a missing seats module is a loud contract error
+    # rather than an import-time crash for unrelated callers.
+    from pulse_seats import SeatError, get_seat
+
+    try:
+        seat = get_seat(raw)
+    except SeatError as e:
+        raise CardContractError(
+            e.rule,
+            e.message,
+            hint=e.hint,
+        ) from e
+    payload["addressee"] = seat["name"]
+
+
 def validate_card_type(card_type):
     if card_type not in CARD_TYPES:
         raise CardContractError(
@@ -317,6 +358,7 @@ def validate_payload(card_type, payload, title_max=TITLE_MAX):
     validate_required_fields(card_type, payload)
     validate_field_types(card_type, payload)
     validate_url_scheme(payload)
+    validate_addressee(payload)
 
     warnings = []
     if card_type == "action":

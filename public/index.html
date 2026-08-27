@@ -66,6 +66,13 @@
     text-transform: uppercase; padding: 3px 8px; border-radius: 6px; margin-bottom: 8px;
     margin-left: 6px; background: #3a1414; color: #ff9a8a; vertical-align: middle;
   }
+  /* Named addressee (2026-08-27): routing metadata, not a second owner.
+     Only rendered when the seat is not the implicit default (Mike). */
+  .addressee {
+    display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; padding: 3px 8px; border-radius: 6px; margin-bottom: 8px;
+    margin-left: 6px; background: #16233a; color: #6ea8fe; vertical-align: middle;
+  }
   .title { font-size: 16.5px; font-weight: 620; margin: 0 0 4px; line-height: 1.3; }
   .why, .body-text { font-size: 14px; opacity: 0.75; margin: 0 0 10px; line-height: 1.45; white-space: pre-wrap; }
   /* status_line (R2b, 2026-08-15, handshake-protocol-v1.md): a stateful
@@ -449,6 +456,27 @@ function escalationBadge(c) {
 function sourceUnknownBadge(c) {
   if ((c || {}).created_by !== 'unknown') return '';
   return `<span class="escalation" title="No producer attribution — created_by was not set when this card was pushed">source unknown</span>`;
+}
+
+// Named addressee (2026-08-27): who should act. Distinct from created_by
+// (who posted). Omitted/blank payload.addressee is Mike — the board stays
+// Mike-gated; this badge is only a routing label for a named grok-bot seat.
+const DEFAULT_ADDRESSEE = 'mike';
+
+function cardAddressee(c) {
+  const raw = ((c || {}).payload || {}).addressee;
+  if (typeof raw !== 'string' || !raw.trim()) return DEFAULT_ADDRESSEE;
+  return raw.trim().toLowerCase();
+}
+
+function addresseeBadge(c) {
+  const slug = cardAddressee(c);
+  if (slug === DEFAULT_ADDRESSEE) return '';
+  return `<span class="addressee" title="Routing addressee — who should act. Mike still sees this card; addressee is not a second owner login.">to ${esc(slug)}</span>`;
+}
+
+function titleBadges(c) {
+  return `${escalationBadge(c)}${sourceUnknownBadge(c)}${addresseeBadge(c)}`;
 }
 
 // The one place any surface should read a card's display title from.
@@ -1449,7 +1477,7 @@ function renderCard(c, onDone = loadCards) {
       : '';
     body = `
       <div class="action-line">
-        <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}${sourceUnknownBadge(c)}</p>
+        <p class="title">${esc(cardTitleText(c))}${titleBadges(c)}</p>
       </div>
       ${p.status_line ? `<p class="status-line">${renderInlineText(p.status_line)}</p>` : ''}
       ${p.why ? `<p class="why">${renderInlineText(p.why)}</p>` : ''}
@@ -1467,7 +1495,7 @@ function renderCard(c, onDone = loadCards) {
       </div>`;
   } else if (c.type === 'verdict') {
     body = `
-      <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}${sourceUnknownBadge(c)}</p>
+      <p class="title">${esc(cardTitleText(c))}${titleBadges(c)}</p>
       <p class="why">${renderInlineText(p.summary)}</p>
       ${safeUrl ? `<p><a class="link" href="${esc(safeUrl)}" target="_blank" rel="noopener">${esc(safeUrl)}</a></p>` : ''}
       <div class="actions">
@@ -1485,7 +1513,7 @@ function renderCard(c, onDone = loadCards) {
     // just add rows, never get dropped.
     const opts = p.options || [];
     body = `
-      <p class="title">${esc(cardTitleText(c))}${escalationBadge(c)}${sourceUnknownBadge(c)}</p>
+      <p class="title">${esc(cardTitleText(c))}${titleBadges(c)}</p>
       ${p.why ? `<p class="body-text">${renderInlineText(p.why)}</p>` : ''}
       ${safeUrl ? `<p class="body-text"><a href="${esc(safeUrl)}" target="_blank" rel="noopener">Full writeup &rarr;</a></p>` : ''}
       <div class="actions">
@@ -1499,7 +1527,7 @@ function renderCard(c, onDone = loadCards) {
     // producer supplied one, sits behind briefDrill()'s collapsed-by-
     // default panel — never dumped inline (Mike, 2026-08-13).
     body = `
-      <p class="title">${esc(stripEscalationBanner(p.title) || 'Daily brief')}${escalationBadge(c)}${sourceUnknownBadge(c)}</p>
+      <p class="title">${esc(stripEscalationBanner(p.title) || 'Daily brief')}${titleBadges(c)}</p>
       <p class="body-text">${renderInlineText(p.lines || '')}</p>
       ${briefDrill(c.id, p.full_text)}
       <div class="actions">
