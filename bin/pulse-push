@@ -3,11 +3,12 @@
 
 Usage:
   pulse-push action   --title T [--why W] [--steps S] [--url U] [--source S]
+                       [--to SEAT]
                        [--actions JSON_OR_PATH]
                        [--yeshie-steps STEPS] [--yeshie-task JSON_OR_PATH]
-  pulse-push verdict  --artifact A --url U --summary S
-  pulse-push decision --question Q --options "A,B,C"
-  pulse-push brief    --title T --lines L
+  pulse-push verdict  --artifact A --url U --summary S [--to SEAT]
+  pulse-push decision --question Q --options "A,B,C" [--to SEAT]
+  pulse-push brief    --title T --lines L [--to SEAT]
   pulse-push bounce   --id ID --reason "..."
   pulse-push resolve  --id ID --note "..."
   pulse-push comment  --id ID --body "..." [--author mike]
@@ -58,6 +59,7 @@ import urllib.request
 # does not put the script's directory on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from pulse_card_contract import CardContractError, validate_payload  # noqa: E402
+from pulse_seats import stamp_addressee  # noqa: E402
 
 DEFAULT_URL = "https://omfwcodoimjmbrhssvfl.supabase.co"
 APP_ID = "pulse-zero"
@@ -363,6 +365,12 @@ def push(args, key, url):
         # ("Brief/FYI: 3-line digest ... md file = fleet record").
         if getattr(args, "full_text", None):
             payload["full_text"] = args.full_text
+
+    # Named addressee (2026-08-27): routing metadata, not provenance and not
+    # a second owner. --source / created_by stays who posted. --to stamps
+    # payload.addressee; omitted means Mike (field left off, matching every
+    # card written before this flag existed). See ADDRESSEES.md.
+    stamp_addressee(payload, getattr(args, "to", None))
 
     # One enforcement point, shared with _estate/bin/pulse-enqueue.
     enforce_contract(ctype, payload)
@@ -686,6 +694,18 @@ def _parse_iso(s):
     return datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
+def add_to_arg(parser):
+    """Named addressee — routing metadata, default Mike. See ADDRESSEES.md."""
+    parser.add_argument(
+        "--to",
+        dest="to",
+        metavar="SEAT",
+        help="named addressee seat (default: mike, field omitted). Routing "
+             "metadata on Mike's board, not a second owner login and not "
+             "--source. First grok-bot seat: rook. See ADDRESSEES.md.",
+    )
+
+
 def main():
     p = argparse.ArgumentParser(description="Push/list/bounce/resolve cards on Pulse Zero")
     sub = p.add_subparsers(dest="type")
@@ -697,6 +717,7 @@ def main():
     a.add_argument("--url")
     a.add_argument("--source")
     a.add_argument("--key", help="stable dedup key — replaces any existing OPEN card with the same key instead of inserting a new one")
+    add_to_arg(a)
     a.add_argument("--status-line", dest="status_line",
                     help="R2b (2026-08-15): the card's own self-reported precondition state, "
                          "e.g. 'waiting for email' -> 'email received'. Rendered above --why. "
@@ -723,6 +744,7 @@ def main():
     v.add_argument("--summary", required=True)
     v.add_argument("--source")
     v.add_argument("--key", help="stable dedup key — replaces any existing OPEN card with the same key instead of inserting a new one")
+    add_to_arg(v)
 
     d = sub.add_parser("decision")
     d.add_argument("--question", required=True)
@@ -733,6 +755,7 @@ def main():
     d.add_argument("--url", help="deep link to the full writeup — the fast route to more info")
     d.add_argument("--source")
     d.add_argument("--key", help="stable dedup key — replaces any existing OPEN card with the same key instead of inserting a new one")
+    add_to_arg(d)
 
     b = sub.add_parser("brief")
     b.add_argument("--title", required=True)
@@ -740,6 +763,7 @@ def main():
     b.add_argument("--full-text", dest="full_text", help="optional: full body, rendered collapsed behind a drill-down")
     b.add_argument("--source")
     b.add_argument("--key", help="stable dedup key — replaces any existing OPEN card with the same key instead of inserting a new one")
+    add_to_arg(b)
 
     bo = sub.add_parser("bounce")
     bo.add_argument("--id", required=True)

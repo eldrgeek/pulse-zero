@@ -188,6 +188,7 @@ Netlify (`pulse-zero.netlify.app`), `publish = "public"`. No build step. Auto-de
 ```bash
 export PULSE_ZERO_SERVICE_KEY=<supabase secret key, sb_secret_...>   # never commit this
 bin/pulse-push action   --title "Approve X" --why "..." --steps "1. ...\n2. ..." --url "https://..." --source dee --key "approve-x"
+bin/pulse-push action   --title "Review the PR" --url "https://..." --source skip --to rook --key "review-the-pr"
 bin/pulse-push verdict  --artifact "Momentum v0" --url "https://momentum-demo-esr.netlify.app" --summary "..." --source dee --key "momentum-v0-verdict"
 bin/pulse-push decision --question "Ship A or B?" --options "A,B,Other" --why "Context so Mike can decide here." --url "https://..." --source dee --key "ship-a-or-b"
 bin/pulse-push brief    --title "Estate brief 2026-07-16" --lines "Line1\nLine2\nLine3" --source dee --key "estate-brief-2026-07-16"
@@ -387,6 +388,27 @@ bin/pulse-push --list-snoozed            # cards hidden from the default view un
 ```
 
 `PULSE_ZERO_SUPABASE_URL` defaults to the shared SOMA Auth project; override only if migrating.
+
+### Named addressees (`--to`, 2026-08-27)
+
+`--source` / `created_by` is who posted. `--to` / `payload.addressee` is who
+should act. They are different fields. Default addressee is Mike: omit
+`--to` and the field stays off the payload, matching every card written
+before this flag existed. Rook is the first named Grok Bot seat
+(`kind=grok-bot`, `inbox=pulse`). The board stays Mike-gated — he is the
+human who sees Pulse; addressee is routing metadata, not a second owner
+login. A non-Mike addressee renders a `to rook` badge.
+
+Herm profiles (Rally / Mae / Greta) are not seats. Discord delivery for a
+Rook-addressed card stays Pulse-only until Herm is up and Rook has a
+recorded Discord id — see [`ADDRESSEES.md`](ADDRESSEES.md). That contract
+is the follow-up for cc-dispatch `notify`; this repo does not change
+`notify.sh`.
+
+```bash
+bin/pulse-push action --title "Review the PR" --url "https://…" --source skip --to rook --key "…"
+```
+
 
 ### Snooze (2026-07-26)
 
@@ -589,6 +611,7 @@ The signed-session function also has focused fail-closed tests:
 node --test test/*.test.js
 python3 test/test_pulse_push_actions.py
 python3 test/test_card_contract_gate.py
+python3 test/test_pulse_seats.py
 ```
 
 `test/pulse-drill-accordion.test.js` (part of the `node --test` run above) is a
@@ -599,4 +622,6 @@ zero-extra-deps convention elsewhere in this repo; it fakes just enough
 extracted from `public/index.html`, not a reimplementation of them.
 `test/test_card_contract_gate.py` covers the 2026-08-13 hard link-surface gate
 and the brief card's optional `full_text` field directly against
-`pulse_card_contract.validate_payload()`.
+`pulse_card_contract.validate_payload()`. `test/test_pulse_seats.py` covers
+named addressees (`--to` / `payload.addressee`) and the seat registry without
+a live Discord or Herm gateway.
