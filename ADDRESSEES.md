@@ -27,6 +27,12 @@ The owner gate is unchanged: `public.is_pulse_owner()` is Mike only
 (`mw@mike-wolf.com`, `mw.personalmail@gmail.com`). A Rook-addressed card
 still lands on Mike's board because he is the human who sees Pulse. The
 board UI shows a `to rook` badge so he can tell it is not his to execute.
+The badge is fail-closed: it renders only for a known non-Mike seat
+(Rook). An unknown slug does not get a seat badge — a typo `--to` must
+not look like a real seat. `validate_payload()` already rejects unknowns
+on write; the board still consults the same registry names
+(`bin/pulse_seats.py` `SEATS`, mirrored as `KNOWN_SEATS` in
+`public/index.html`) if a row reaches the renderer anyway.
 
 Asks still go `cc hud-ask → relay :3333 → Pulse :8088`. No second HUD.
 

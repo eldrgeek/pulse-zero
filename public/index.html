@@ -67,7 +67,7 @@
     margin-left: 6px; background: #3a1414; color: #ff9a8a; vertical-align: middle;
   }
   /* Named addressee (2026-08-27): routing metadata, not a second owner.
-     Only rendered when the seat is not the implicit default (Mike). */
+     Only rendered for a known non-Mike seat (Rook). Unknown slugs omit. */
   .addressee {
     display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
     text-transform: uppercase; padding: 3px 8px; border-radius: 6px; margin-bottom: 8px;
@@ -461,17 +461,29 @@ function sourceUnknownBadge(c) {
 // Named addressee (2026-08-27): who should act. Distinct from created_by
 // (who posted). Omitted/blank payload.addressee is Mike — the board stays
 // Mike-gated; this badge is only a routing label for a named grok-bot seat.
+//
+// KNOWN_SEATS must stay in lockstep with bin/pulse_seats.py SEATS. The
+// board cannot import that module (zero-build inline script); the lockstep
+// is enforced by test_pulse_seats.BoardKnownSeats. Fail closed: an unknown
+// slug is not a seat — a typo --to must not look like Rook. validate_payload
+// already rejects unknowns on write; the badge is the last line of defense
+// for any row that reached the board anyway.
 const DEFAULT_ADDRESSEE = 'mike';
+const KNOWN_SEATS = new Set(['mike', 'rook']);
 
 function cardAddressee(c) {
   const raw = ((c || {}).payload || {}).addressee;
   if (typeof raw !== 'string' || !raw.trim()) return DEFAULT_ADDRESSEE;
-  return raw.trim().toLowerCase();
+  const slug = raw.trim().toLowerCase();
+  if (!KNOWN_SEATS.has(slug)) return DEFAULT_ADDRESSEE;
+  return slug;
 }
 
 function addresseeBadge(c) {
-  const slug = cardAddressee(c);
-  if (slug === DEFAULT_ADDRESSEE) return '';
+  const raw = ((c || {}).payload || {}).addressee;
+  if (typeof raw !== 'string' || !raw.trim()) return '';
+  const slug = raw.trim().toLowerCase();
+  if (!KNOWN_SEATS.has(slug) || slug === DEFAULT_ADDRESSEE) return '';
   return `<span class="addressee" title="Routing addressee — who should act. Mike still sees this card; addressee is not a second owner login.">to ${esc(slug)}</span>`;
 }
 

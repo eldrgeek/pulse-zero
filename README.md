@@ -397,7 +397,10 @@ should act. They are different fields. Default addressee is Mike: omit
 before this flag existed. Rook is the first named Grok Bot seat
 (`kind=grok-bot`, `inbox=pulse`). The board stays Mike-gated — he is the
 human who sees Pulse; addressee is routing metadata, not a second owner
-login. A non-Mike addressee renders a `to rook` badge.
+login. A known non-Mike seat (Rook) renders a `to rook` badge. Unknown
+slugs omit the badge (fail closed) — a typo `--to` must not look like a
+real seat. The board's `KNOWN_SEATS` list is locked to
+`bin/pulse_seats.py`.
 
 Herm profiles (Rally / Mae / Greta) are not seats. Discord delivery for a
 Rook-addressed card stays Pulse-only until Herm is up and Rook has a

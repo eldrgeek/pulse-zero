@@ -33,6 +33,11 @@ HERM_PROFILES = frozenset({"rally", "mae", "greta"})
 
 # Optional discord target shape: {channel_id, user_id}. Mention-ready only
 # when user_id is a real recorded id. Rook's is unset on purpose.
+#
+# Board lockstep: public/index.html ``KNOWN_SEATS`` must list these same
+# slugs. The renderer cannot import this module; it badges only a known
+# non-Mike seat and fail-closes (omits the badge) on anything else. Adding
+# a seat here without updating KNOWN_SEATS would hide a valid badge.
 SEATS = {
     "mike": {
         "name": "mike",
