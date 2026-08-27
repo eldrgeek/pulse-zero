@@ -6,6 +6,7 @@ No live Discord, no Herm gateway, no network. Run standalone:
     python3 test/test_pulse_seats.py
 """
 import pathlib
+import re
 import sys
 import unittest
 
@@ -163,6 +164,34 @@ class ContractAddressee(unittest.TestCase):
         pcc.validate_payload("action", payload)
         self.assertNotIn("addressee", payload)
         self.assertEqual(seats.effective_addressee(payload), "mike")
+
+
+class BoardKnownSeats(unittest.TestCase):
+    """The board cannot import this module. Its KNOWN_SEATS list must
+    still match SEATS so a typo --to cannot look like Rook.
+    """
+
+    def test_board_known_seats_match_registry(self):
+        html = (ROOT / "public" / "index.html").read_text()
+        match = re.search(
+            r"const KNOWN_SEATS = new Set\(\[([^\]]*)\]\)",
+            html,
+        )
+        self.assertIsNotNone(match, "board KNOWN_SEATS was not found")
+        js_seats = {
+            item.strip().strip("'\"")
+            for item in match.group(1).split(",")
+            if item.strip()
+        }
+        self.assertEqual(js_seats, set(seats.SEATS))
+
+        default = re.search(r"const DEFAULT_ADDRESSEE = '([^']+)'", html)
+        self.assertIsNotNone(default, "board DEFAULT_ADDRESSEE was not found")
+        self.assertEqual(default.group(1), seats.DEFAULT_ADDRESSEE)
+
+    def test_unknown_slug_is_not_a_known_seat(self):
+        self.assertNotIn("rok", seats.SEATS)
+        self.assertNotIn("skip", seats.SEATS)
 
 
 class PulsePushToFlag(unittest.TestCase):

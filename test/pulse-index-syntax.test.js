@@ -13,4 +13,5 @@ test('Pulse board main script compiles with typed action wiring present', () => 
   assert(match[1].includes('wireTypedCardActions(div, c, onDone)'));
   assert(match[1].includes('addresseeBadge'));
   assert(match[1].includes('cardAddressee'));
+  assert(match[1].includes('KNOWN_SEATS'));
 });
