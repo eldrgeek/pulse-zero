@@ -45,10 +45,12 @@ Env:
   PULSE_ZERO_SERVICE_KEY    (required — Supabase service_role key, server-only)
 """
 import argparse
+import http.client
 import json
 import os
 import re
 import sys
+import time
 import urllib.parse
 import urllib.request
 
@@ -90,12 +92,29 @@ def sb_request(method, path, key, url, body=None, params=None):
     req.add_header("Content-Type", "application/json")
     if method in ("POST", "PATCH"):
         req.add_header("Prefer", "return=representation")
-    try:
-        with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read().decode() or "null")
-    except urllib.error.HTTPError as e:
-        sys.stderr.write(f"HTTP {e.code}: {e.read().decode()}\n")
-        sys.exit(1)
+    # Supabase's edge occasionally drops the connection mid-response
+    # (http.client.RemoteDisconnected) with no HTTP status at all — not an
+    # error Supabase raised, a transient network hiccup. sb_request used to
+    # have no timeout and no retry, so one flake failed the whole push (seen
+    # 2026-09-07 on com.soma.mdp-unseen-card: card had already updated
+    # correctly on a prior run, this run died on the pre-write dedupe lookup
+    # before ever reaching the write). Retry transient connection failures
+    # a few times with backoff; HTTP error responses (4xx/5xx) are real
+    # answers from the server, not flakes, so they still fail fast below.
+    last_exc = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read().decode() or "null")
+        except urllib.error.HTTPError as e:
+            sys.stderr.write(f"HTTP {e.code}: {e.read().decode()}\n")
+            sys.exit(1)
+        except (urllib.error.URLError, http.client.HTTPException, ConnectionError) as e:
+            last_exc = e
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+    sys.stderr.write(f"sb_request: {last_exc} (after 3 attempts)\n")
+    sys.exit(1)
 
 
 def enforce_contract(card_type, payload):
