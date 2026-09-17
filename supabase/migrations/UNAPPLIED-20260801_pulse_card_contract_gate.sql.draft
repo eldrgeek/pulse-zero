@@ -1,0 +1,302 @@
+-- ============================================================================
+-- UNAPPLIED DRAFT — DO NOT RUN AGAINST THE SHARED PROJECT (omfwcodoimjmbrhssvfl)
+-- ============================================================================
+--
+-- Status: DRAFT, deliberately not named `*.sql` so `supabase db push` and every
+-- glob-based migration runner skips it. Applying this file is a decision Mike
+-- makes explicitly, after the prerequisite below is satisfied and verified.
+--
+-- ── WHY IT IS BLOCKED ───────────────────────────────────────────────────────
+--
+-- `public.pulse_cards` has TWO legitimate writers with DIFFERENT contracts:
+--
+--   1. `pulse-zero/bin/pulse-push`            — the authored-card contract
+--                                               (TITLE_MAX = 60).
+--   2. `_estate/bin/pulse_common.push_card()` — shared by `_estate/bin/pulse-drain`,
+--      `pulse-morning`, `pulse-archive`, `pulse-answer`. The nightly escalator
+--      (`pulse-drain`, launchd `com.mikewolf.pulse-drain` at 23:30) re-titles a
+--      stale card as "⏫ Day N — still waiting: <original>", which is
+--      intentionally longer than 60 chars — up to 96 by construction
+--      (26-char prefix + `card_title()`'s 70-char truncation).
+--
+-- A trigger cannot tell these producers apart. `created_by` is a client-supplied
+-- string in the INSERT body: useless against a real bypasser, and fatal to the
+-- sanctioned one. So the DB tier MUST be a strict WEAKENING of the application
+-- contract — every rule here must be one that BOTH writers already satisfy.
+-- Anything narrower belongs in `pulse-zero/bin/pulse_card_contract.py`, where a
+-- human or an AI sees the error text at authoring time.
+--
+-- ── THE SPECIFIC DATA-LOSS RISK (the reason this is a hard gate, not a nit) ──
+--
+-- `_estate/bin/pulse-drain` historically ran, per escalated card:
+--
+--     archive_card(...)   # flips the ORIGINAL card to status='retired'
+--     push_card(...)      # inserts the louder replacement
+--
+-- and `_estate/bin/pulse_common.sb()` raises `SystemExit` on any HTTPError with
+-- 4xx explicitly NOT retried. A trigger rejection therefore produced:
+-- original already retired + replacement never inserted + the process dies
+-- mid-loop + the trailing `log()` line never runs. Mike's genuine 48-hour-old
+-- ask disappears from the board with no log entry. Applying this migration
+-- against that ordering silently deletes real asks on night one.
+--
+-- ── PREREQUISITES BEFORE THIS FILE MAY BE RENAMED TO *.sql AND APPLIED ──────
+--
+--   [P1] pulse-drain pushes the replacement BEFORE archiving the original, with
+--        a per-card try/except that leaves the original OPEN and records the
+--        failure. (Landed in the working tree 2026-08-01 by the sibling session
+--        under work-claim b20752af — `_estate/bin/pulse-drain` push at the
+--        `push_card(...)` call, `archive_card(...)` only after it returns.
+--        VERIFY IT IS COMMITTED before applying.)
+--   [P2] Both writers route through `pulse-zero/bin/pulse_card_contract.py`
+--        (`validate_payload`), so the application tier is strictly STRONGER
+--        than this file. (Also landed in the working tree, uncommitted.)
+--   [P3] Shadow run: execute the SHADOW MODE query below against production and
+--        confirm it returns ZERO rows. As of the 104-row survey on 2026-08-01 it
+--        does — but re-run it, do not trust this comment.
+--   [P4] Run `pulse-zero/test/test_card_gate.sql` against a scratch Postgres and
+--        confirm all assertions pass. It `\ir`-includes THIS file, so it tests
+--        the real artifact, not a copy. (53/53 green on PostgreSQL 16.14,
+--        2026-08-01, clean-slate database.)
+--   [P5] Run `pulse-zero/test/gen_card_gate_fuzz.py` and confirm `app_ok_db_bad`
+--        is 0 — the differential proof that this file is a STRICT WEAKENING of
+--        `pulse_card_contract.validate_payload`. That is the invariant that
+--        keeps the gate from ever rejecting a sanctioned producer's row.
+--        (0 of 1157 cases, 2026-08-01.) Re-run it after ANY rule change here
+--        or in the Python contract.
+--
+-- ── DESIGN NOTES ────────────────────────────────────────────────────────────
+--
+-- * INSERT ONLY. There is deliberately no UPDATE trigger. Mike's browser marks
+--   cards answered/bounced/retired/resolved and snoozes them via RLS UPDATEs as
+--   `mw@mike-wolf.com` (`pulse_cards_mike_update`, added in
+--   20260727_google_signin_owner_emails.sql — note there is NO owner INSERT
+--   policy, so the browser can never trip this gate). `pulse-push`'s dedup path
+--   also PATCHes an existing row in place. An UPDATE-side gate would let one
+--   historically-malformed row lock Mike out of dismissing it — the board
+--   equivalent of a door that only opens inward. Content is validated where it
+--   is authored; status transitions are never gated.
+--
+-- * TIER A rules are the ones both producers provably satisfy (verified against
+--   all 104 live rows and against `pulse-drain`'s escalation transform, which
+--   copies the source payload and only ever ADDS keys). TIER B is one optional
+--   outer fence; it is separable and can be deleted without touching TIER A.
+--
+-- * NOT enforced here, on purpose: title <= 60 (breaks the escalator), typed
+--   `actions` deep schema, imperative mood, url presence, `steps` presence
+--   (3 of 45 live action rows legitimately have none). Those stay in the CLI.
+--
+-- ── SHADOW MODE (safe to run against production, read-only) ─────────────────
+--
+--   Apply ONLY the two `create or replace function` statements below (they are
+--   inert without the trigger), then:
+--
+--     select id, type, created_by, created_at,
+--            public.pulse_card_contract_violation(type, payload) as violation
+--       from public.pulse_cards
+--      where public.pulse_card_contract_violation(type, payload) is not null
+--      order by created_at desc;
+--
+-- ── ROLLBACK (complete, one statement) ──────────────────────────────────────
+--
+--     drop trigger if exists pulse_card_contract_gate on public.pulse_cards;
+--
+--   That fully disables enforcement. The two functions are left behind
+--   intentionally: they are side-effect-free and remain useful for shadow
+--   queries. `drop function if exists public.pulse_card_contract_gate();`
+--   and `drop function if exists public.pulse_card_contract_violation(text, jsonb);`
+--   remove them too. No columns are added, no rows are rewritten, no existing
+--   constraint, RLS policy, or `is_pulse_owner()` is touched.
+--
+-- Board standard: ~/Projects/pulse-zero/README.md
+-- Application contract: ~/Projects/pulse-zero/bin/pulse_card_contract.py
+-- ============================================================================
+
+
+-- ── Presence, matching pulse_card_contract.is_present() exactly ─────────────
+-- Missing = SQL NULL, JSON null, "", whitespace-only, [] or {}.
+create or replace function public.pulse_card_field_present(v jsonb)
+returns boolean
+language sql
+immutable
+parallel safe
+as $$
+  select case
+    when v is null then false
+    when jsonb_typeof(v) = 'null'   then false
+    when jsonb_typeof(v) = 'string' then btrim(v #>> '{}') <> ''
+    when jsonb_typeof(v) = 'array'  then jsonb_array_length(v) > 0
+    when jsonb_typeof(v) = 'object' then exists (select 1 from jsonb_object_keys(v))
+    else true
+  end;
+$$;
+
+comment on function public.pulse_card_field_present(jsonb) is
+  'Pulse card contract presence test. Mirrors pulse_card_contract.is_present(): null/JSON-null/blank string/empty array/empty object all count as missing.';
+
+
+-- ── The checker. Returns NULL when the card is acceptable, otherwise a full
+--    human-readable violation message. Pure: safe to run over the whole table
+--    in shadow mode without enforcing anything.
+create or replace function public.pulse_card_contract_violation(p_type text, p_payload jsonb)
+returns text
+language plpgsql
+immutable
+parallel safe
+set search_path = pg_catalog, public
+as $$
+declare
+  required_fields text[];
+  missing         text[];
+  title_len       integer;
+  -- TIER B outer fence. Deliberately far above BOTH producers' real ceilings:
+  -- authored titles cap at 60 (pulse_card_contract.TITLE_MAX), the escalator's
+  -- documented override caps at 160 (ESCALATION_TITLE_MAX) with a true
+  -- construction ceiling of 96, and the longest action title in the 104-row
+  -- live survey is 85. 240 only fires on an unbounded string — the exact
+  -- pathology that produced "still waiting: still waiting: ..." compounding.
+  runaway_title_max constant integer := 240;
+  ref  constant text := 'Board standard: ~/Projects/pulse-zero/README.md '
+                        '(contract: pulse-zero/bin/pulse_card_contract.py). '
+                        'Push cards with pulse-zero/bin/pulse-push, not a raw INSERT.';
+begin
+  -- ── TIER A.1 — unknown_card_type ────────────────────────────────────────
+  if p_type is null or p_type not in ('action', 'decision', 'verdict', 'brief') then
+    return format(
+      'card contract violation [unknown_card_type]: %L is not a Pulse card type; '
+      || 'must be one of action, decision, verdict, brief. %s',
+      p_type, ref);
+  end if;
+
+  -- ── TIER A.2 — empty_payload ────────────────────────────────────────────
+  if p_payload is null or jsonb_typeof(p_payload) = 'null' then
+    return format(
+      'card contract violation [empty_payload]: %s card has a null payload — '
+      || 'nothing would render on the board. %s', p_type, ref);
+  end if;
+
+  if jsonb_typeof(p_payload) <> 'object' then
+    return format(
+      'card contract violation [payload_shape]: %s card payload is a JSON %s, '
+      || 'must be an object. %s', p_type, jsonb_typeof(p_payload), ref);
+  end if;
+
+  if not exists (select 1 from jsonb_object_keys(p_payload)) then
+    return format(
+      'card contract violation [empty_payload]: %s card has an empty payload '
+      || '{} — nothing would render on the board. %s', p_type, ref);
+  end if;
+
+  -- ── TIER A.3 — required_field ───────────────────────────────────────────
+  -- Mirrors pulse_card_contract.REQUIRED_FIELDS. These are the *board payload*
+  -- key names, which differ from the CLI flags: a verdict's name is
+  -- `artifact_name` in the payload but `--artifact` on the command line.
+  -- pulse-drain's escalate_payload() copies the source payload and only ADDS
+  -- keys, so an escalated card inherits whatever the original satisfied.
+  required_fields := case p_type
+    when 'action'   then array['title']
+    when 'decision' then array['question', 'options']
+    when 'verdict'  then array['artifact_name', 'url', 'summary']
+    when 'brief'    then array['title', 'lines']
+  end;
+
+  select array_agg(f order by ord)
+    into missing
+    from unnest(required_fields) with ordinality as t(f, ord)
+   where not public.pulse_card_field_present(p_payload -> f);
+
+  if missing is not null then
+    return format(
+      'card contract violation [required_field]: %s card is missing required '
+      || 'payload field(s): %s. A %s card requires: %s. '
+      || '(CLI flags: %s.) %s',
+      p_type,
+      array_to_string(missing, ', '),
+      p_type,
+      array_to_string(required_fields, ', '),
+      case p_type
+        when 'action'   then '--title'
+        when 'decision' then '--question, --options'
+        when 'verdict'  then '--artifact, --url, --summary'
+        when 'brief'    then '--title, --lines'
+      end,
+      ref);
+  end if;
+
+  -- ── TWO RULES DELIBERATELY ABSENT — both were drafted, both were CUT after
+  --    a 1157-case differential fuzz proved each one rejects payloads the
+  --    application contract ACCEPTS. That is the fatal direction: a DB rule
+  --    stricter than the app tier silently kills a sanctioned producer, which
+  --    is the exact failure this whole design is trying to avoid.
+  --
+  --  1. options_shape (`jsonb_typeof(payload->'options') = 'array'`).
+  --     16 fuzz cases: `{"options": 0}`. Python's
+  --     `opts = payload.get("options") or []` collapses 0 to [] BEFORE the
+  --     isinstance check, so validate_payload accepts it. Fix Python first.
+  --
+  --  2. field_type (required text fields must be JSON strings).
+  --     168 fuzz cases. `pulse_card_contract` type-checks nothing except
+  --     `action.title`, and even that only incidentally — `validate_title`
+  --     calls `.strip()` and blows up with a raw AttributeError instead of a
+  --     CardContractError. `{"question": 42}`, `{"lines": ["a","b"]}`,
+  --     `{"artifact_name": {...}}` all pass validate_payload today.
+  --
+  --  Both become adoptable here the moment `pulse_card_contract.validate_payload`
+  --  enforces them and raises CardContractError. Re-run
+  --  `pulse-zero/test/gen_card_gate_fuzz.py` to confirm before adding either.
+  --  "Obviously safe" is not a proof — both of these looked obviously safe.
+
+  -- ── TIER B — action_title_runaway (OPTIONAL; delete this block to drop it) ─
+  -- NOT the board's 60-char standard. This is an outer fence against an
+  -- unbounded title, which is a real observed failure: pulse-drain re-wrapped
+  -- its own banner every night ("Day 2 — still waiting: still waiting: ...")
+  -- and the prefix grew without bound until the ask scrolled off the card.
+  -- Set well above every sanctioned producer so it can never reject a
+  -- legitimate escalation — it only catches a generator that has run away.
+  if p_type = 'action' then
+    title_len := length(p_payload ->> 'title');
+    if title_len > runaway_title_max then
+      return format(
+        'card contract violation [action_title_runaway]: action card title is %s '
+        || 'chars, hard ceiling is %s. This is NOT the board standard (60, '
+        || 'enforced in pulse-push) — it is the runaway fence. A title this long '
+        || 'means a generator is concatenating without a budget. %s',
+        title_len, runaway_title_max, ref);
+    end if;
+  end if;
+
+  return null;
+end;
+$$;
+
+comment on function public.pulse_card_contract_violation(text, jsonb) is
+  'Returns NULL if a Pulse card payload satisfies the permissive DB tier of the card contract, else a full violation message. Pure — safe to run in shadow mode over the whole table.';
+
+
+-- ── The gate. BEFORE INSERT, FOR EACH ROW. There is NO update trigger; see the
+--    header. `status` transitions from the board UI must never be blocked.
+create or replace function public.pulse_card_contract_gate()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+declare
+  violation text;
+begin
+  violation := public.pulse_card_contract_violation(new.type, new.payload);
+  if violation is not null then
+    raise exception using
+      message = violation,
+      errcode = 'check_violation',
+      hint = 'This card was rejected at INSERT. Existing cards are untouched and '
+             'every status change (answer / snooze / bounce / retire / resolve) '
+             'still works. Fix the payload and re-push.';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists pulse_card_contract_gate on public.pulse_cards;
+create trigger pulse_card_contract_gate
+  before insert on public.pulse_cards
+  for each row execute function public.pulse_card_contract_gate();
