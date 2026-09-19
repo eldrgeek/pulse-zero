@@ -75,6 +75,9 @@ test('command envelope carries executor contract and stable idempotency metadata
   assert.equal(row.idempotency_key, expectedKey);
   assert.equal(row.payload.idempotency_key, expectedKey);
   assert.deepEqual(row.payload.action, action);
+  // The bridge admits a typed action only as a fresh click (2026-09-19).
+  assert.equal(row.payload.interaction, 'user_click');
+  assert.ok(Math.abs(Date.now() - Date.parse(row.payload.requested_at)) < 5000);
 });
 
 test('open command surfaces broker waiting_human state and resumes same attempt', () => {

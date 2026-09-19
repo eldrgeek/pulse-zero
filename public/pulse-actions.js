@@ -139,6 +139,11 @@
         revision: action.revision,
         idempotency_key: key,
         action,
+        // The click is the consent. pulse-mac-bridge admits a typed action
+        // only from Mike's signed-in session and only while this click is
+        // fresh; the database stamps the row's real provenance.
+        interaction: 'user_click',
+        requested_at: new Date().toISOString(),
       },
       status: 'open',
       pulse_card_id: card.id,

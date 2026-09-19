@@ -379,15 +379,14 @@ def validate_payload(card_type, payload, title_max=TITLE_MAX):
         # and could not tell anyone. Mike found out by asking.
         #
         # The gate's intent is right: an action card must give Mike something
-        # to DO. But `open_url`, `open_session`, `clipboard_set` and
-        # `clipboard_take_and_deploy` are ALL things to do — they are exactly
+        # to DO. But `open_url`, `open_session` and `clipboard_take_and_deploy`
+        # (clipboard_set was retired 2026-09-19) are ALL things to do — they are exactly
         # the set this codebase already validates in STEP_ACTION_COMMANDS.
         # Recognising one of the four was a false negative, and a hardening
         # rule that disarms the safety net is worse than the prose it was
         # written to stop.
         STEP_LINK_COMMANDS = {
-            "open_url", "open_session", "clipboard_set",
-            "clipboard_take_and_deploy",
+            "open_url", "open_session", "clipboard_take_and_deploy",
         }
         has_step_link = any(
             isinstance(a, dict) and a.get("command") in STEP_LINK_COMMANDS
