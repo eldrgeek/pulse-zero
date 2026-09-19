@@ -512,7 +512,7 @@ function setPulseSession(session) {
 // array, index-aligned 1:1 with the lines parseSteps() produces (0-based).
 // Each entry is either null/absent or {command, payload} exactly per
 // pulse-mac-bridge/CONTRACT.md's mac_commands shapes (open_session,
-// clipboard_set, clipboard_take_and_deploy). open_url is handled entirely
+// clipboard_take_and_deploy). open_url is handled entirely
 // in the authenticated browser; the other commands use mac_commands.
 // pulse-push's --step-actions
 // flag writes this. No DB migration needed — payload is already freeform
@@ -525,7 +525,6 @@ function stepAction(stepActions, idx) {
 function stepActionLabel(action) {
   if (action && action.label) return action.label;
   return { open_url: 'Open page', open_session: 'Continue on Mac',
-    clipboard_set: 'Copy to clipboard',
     clipboard_take_and_deploy: 'Install from clipboard' }[(action || {}).command] || 'Run';
 }
 
@@ -869,14 +868,14 @@ async function runStepAction(cardId, stepIdx, action, btn) {
   if (!note) { note = document.createElement('div'); note.className = 'step-action-note'; li.appendChild(note); }
   btn.textContent = 'Sending…';
   const payload = { ...(action.payload || {}) };
-  if (action.command === 'open_session') {
-    // Consent is created by the authenticated click, never stored on the card.
-    // The bridge accepts it only while fresh and only for this one handoff.
-    payload.interaction = 'user_click';
-    payload.requested_at = new Date().toISOString();
-  }
+  // Consent is created by the authenticated click, never stored on the card.
+  // The bridge accepts it only while fresh and only for this one handoff. The
+  // database trigger requires the stamp and pulse_card_id, and checks that the
+  // rest of the payload is exactly a step action on that open card.
+  payload.interaction = 'user_click';
+  payload.requested_at = new Date().toISOString();
   const { data, error } = await sb.from('mac_commands')
-    .insert({ command: action.command, payload, status: 'open' })
+    .insert({ command: action.command, payload, status: 'open', pulse_card_id: cardId })
     .select().single();
   if (error) {
     btn.disabled = false;

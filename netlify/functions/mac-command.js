@@ -18,9 +18,10 @@ exports.handler = async (event) => {
     return { statusCode: 405, headers: cors, body: JSON.stringify({ error: 'POST only' }) };
   }
 
+  // Fail closed: an unset secret used to let any caller through (2026-09-19).
   const expected = process.env.PULSE_TOOL_SECRET;
   const got = event.headers['x-pulse-secret'] || event.headers['X-Pulse-Secret'];
-  if (expected && got !== expected) {
+  if (!expected || got !== expected) {
     return { statusCode: 401, headers: cors, body: JSON.stringify({ error: 'bad secret' }) };
   }
 
@@ -38,6 +39,14 @@ exports.handler = async (event) => {
   const { command, url, steps, text, title, voice_id } = body;
   if (!command) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'command required' }) };
+  }
+
+  if (['open', 'open_and_guide'].includes(command)) {
+    let parsed = null;
+    try { parsed = new URL(url); } catch (_) { /* refused below */ }
+    if (!parsed || !['https:', 'http:'].includes(parsed.protocol)) {
+      return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'url must be absolute http(s)' }) };
+    }
   }
 
   let payload;

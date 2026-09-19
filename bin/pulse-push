@@ -72,9 +72,13 @@ BOARD_INBOX = os.path.expanduser("~/Projects/SOMA/board/inbox")
 STEP_ACTION_COMMANDS = {
     "open_url",
     "open_session",
-    "clipboard_set",
     "clipboard_take_and_deploy",
 }
+# 2026-09-19: clipboard_set is retired, and so are caller-supplied
+# verify_command and the vps_env_file destination. Each let whoever writes a
+# card choose what the Mac runs; the database trigger and pulse-mac-bridge now
+# refuse them, so refuse them here too, where the producer can still fix it.
+CLIPBOARD_DESTINATIONS = {"group_bc_credential", "netlify_env"}
 CARD_ACTIONS_VERSION = 1
 CARD_ACTION_EXECUTORS = {"workflow", "web", "mac"}
 ACTION_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
@@ -168,6 +172,21 @@ def parse_step_actions(raw, steps):
         if not isinstance(action.get("payload", {}), dict):
             sys.stderr.write(f"error: --step-actions[{idx}].payload must be an object\n")
             sys.exit(1)
+        if command == "clipboard_take_and_deploy":
+            cpayload = action.get("payload", {})
+            if "verify_command" in cpayload:
+                sys.stderr.write(
+                    f"error: --step-actions[{idx}] verify_command is retired (it ran "
+                    "with shell=True on Mike's Mac); use \"verify\": \"site_http_ok\"\n"
+                )
+                sys.exit(1)
+            dtype = (cpayload.get("destination") or {}).get("type")
+            if dtype not in CLIPBOARD_DESTINATIONS:
+                sys.stderr.write(
+                    f"error: --step-actions[{idx}] clipboard destination must be one of "
+                    f"{', '.join(sorted(CLIPBOARD_DESTINATIONS))}\n"
+                )
+                sys.exit(1)
         if command == "open_url":
             url = action.get("payload", {}).get("url")
             parsed = urllib.parse.urlparse(url or "")
@@ -751,7 +770,7 @@ def main():
                          "execute_card_action Mac-command envelope.")
     a.add_argument("--step-actions", dest="step_actions",
                     help="LEGACY: JSON array, index-aligned with --steps lines (0-based), each entry either "
-                         "null or {\"command\": \"open_url|open_session|clipboard_set|clipboard_take_and_deploy\", "
+                         "null or {\"command\": \"open_url|open_session|clipboard_take_and_deploy\", "
                          "\"payload\": {...}} per pulse-mac-bridge/CONTRACT.md. Renders a real button on "
                          "that step in the board UI. See public/index.html STEP_ACTIONS_CONVENTION comment.")
     a.add_argument("--yeshie-task", dest="yeshie_task",
