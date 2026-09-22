@@ -11,7 +11,8 @@ Usage:
   pulse-push brief    --title T --lines L [--to SEAT]
   pulse-push bounce   --id ID --reason "..."
   pulse-push resolve  --id ID --note "..."
-  pulse-push comment  --id ID --body "..." [--author mike]
+  pulse-push comment  --id ID --body "..." [--author dee]
+  pulse-push patch-payload --id ID --payload JSON_OR_PATH
   pulse-push --list-open
   pulse-push --list-answers [--since ISO8601]
   pulse-push --list-bounced
@@ -64,6 +65,14 @@ from pulse_card_contract import CardContractError, validate_payload  # noqa: E40
 from pulse_seats import stamp_addressee  # noqa: E402
 
 DEFAULT_URL = "https://omfwcodoimjmbrhssvfl.supabase.co"
+
+# Author strings that assert the row is Mike speaking. Mirrors
+# public.pulse_author_claims_owner() in
+# supabase/migrations/20260922_pulse_answer_provenance.sql -- keep the two in
+# step, and let the database be the authority if they ever drift.
+OWNER_AUTHORS_RE = re.compile(
+    r"^(mike|mw|mike wolf|mikewolf|mike_wolf|mike-wolf|owner"
+    r"|mw@mike-wolf\.com|mw\.personalmail@gmail\.com)$")
 APP_ID = "pulse-zero"
 # UX#9 / handshake-protocol-v1.md R2: every producer should be able to hand a
 # session a direct link to the card it just pushed, not just an id.
@@ -610,11 +619,89 @@ def comment(args, key, url):
     if not existing:
         sys.stderr.write(f"error: no card matched id {args.id}\n")
         sys.exit(1)
-    row = {"card_id": args.id, "author": args.author or "mike", "body": args.body}
+    author = args.author or "dee"
+    if OWNER_AUTHORS_RE.match(author.strip().lower()):
+        sys.stderr.write(
+            f"error: --author {author!r} is reserved for Mike's own signed-in Pulse session.\n"
+            "A comment attributed to Mike dispatches an agentic worker on its body "
+            "(pulse-mac-bridge answer_card_comment -> cc-dispatch), so a service key may not\n"
+            "write one. public.pulse_card_comments_guard_insert refuses it in the database too.\n"
+            "Use your own author, e.g. --author dee.\n")
+        sys.exit(2)
+    row = {"card_id": args.id, "author": author, "body": args.body}
     result = sb_request("POST", "pulse_card_comments", key, url, body=row)
     c = result[0] if isinstance(result, list) else result
     print(f"commented on card {args.id}: {c.get('id')}")
     return c
+
+
+BRIDGE_ENV = os.path.expanduser("~/Projects/pulse-mac-bridge/.env")
+
+
+def load_creds():
+    """Return (key, url), preferring the env and falling back to the bridge
+    .env -- the same precedence _estate/bin/pulse_common.load_creds() uses.
+
+    Added 2026-09-22. Before this, every caller that did not already have the
+    key exported had to do it inline, and the answer-worker prompts literally
+    instructed the worker to run
+    `PULSE_ZERO_SERVICE_KEY=$(grep PULSE_MAC_SERVICE_KEY ...env | cut -d= -f2)`.
+    That taught a worker whose prompt embeds untrusted card text where the
+    estate's credentials live. The fallback belongs in the tool.
+    """
+    key = os.environ.get("PULSE_ZERO_SERVICE_KEY")
+    url = os.environ.get("PULSE_ZERO_SUPABASE_URL") or DEFAULT_URL
+    if not key:
+        try:
+            with open(BRIDGE_ENV) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("PULSE_MAC_SERVICE_KEY="):
+                        key = line.split("=", 1)[1].strip().strip("'\"")
+                        break
+        except OSError:
+            pass
+    if not key:
+        sys.stderr.write(
+            "PULSE_ZERO_SERVICE_KEY not set and no PULSE_MAC_SERVICE_KEY in "
+            f"{BRIDGE_ENV}\n")
+        sys.exit(1)
+    return key, url
+
+
+def patch_payload(args, key, url):
+    """Replace a card's payload. This is the supported way for an answer worker
+    to fix a card Mike said was unclear, instead of being handed a curl command
+    and a credential path (2026-09-22). `status` is deliberately not settable
+    here -- that stays Tower's and the board UI's job.
+    """
+    raw = args.payload
+    if not raw.lstrip().startswith("{") and os.path.exists(raw):
+        with open(raw) as f:
+            raw = f.read()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        sys.stderr.write(f"error: --payload is not valid JSON: {exc}\n")
+        sys.exit(2)
+    if not isinstance(payload, dict):
+        sys.stderr.write("error: --payload must be a JSON object\n")
+        sys.exit(2)
+    existing = sb_request("GET", "pulse_cards", key, url,
+                          params={"id": f"eq.{args.id}", "limit": "1"})
+    if not existing:
+        sys.stderr.write(f"error: no card matched id {args.id}\n")
+        sys.exit(1)
+    try:
+        validate_payload(existing[0].get("type"), payload)
+    except CardContractError as exc:
+        sys.stderr.write(f"error: corrected payload breaks the card contract: {exc}\n")
+        sys.exit(2)
+    result = sb_request("PATCH", "pulse_cards", key, url,
+                        params={"id": f"eq.{args.id}"}, body={"payload": payload})
+    row = result[0] if isinstance(result, list) and result else result
+    print(f"patched payload on card {args.id}")
+    return row
 
 
 def run_event(args, key, url):
@@ -814,7 +901,14 @@ def main():
     cm = sub.add_parser("comment")
     cm.add_argument("--id", required=True)
     cm.add_argument("--body", required=True)
-    cm.add_argument("--author", default="mike", help="default 'mike' — this is normally added via the board UI")
+    cm.add_argument("--author", default="dee",
+                    help="default 'dee'. Mike's own comments come from the board UI, which "
+                         "inserts them under his session; 'mike' and its variants are "
+                         "refused here and by the database (2026-09-22)")
+
+    pp = sub.add_parser("patch-payload")
+    pp.add_argument("--id", required=True, help="card id")
+    pp.add_argument("--payload", required=True, help="JSON object, or a path to a file containing one")
 
     re_ = sub.add_parser("run-event")
     re_.add_argument("--id", required=True, help="card id")
@@ -832,11 +926,7 @@ def main():
 
     args = p.parse_args()
 
-    key = os.environ.get("PULSE_ZERO_SERVICE_KEY")
-    url = os.environ.get("PULSE_ZERO_SUPABASE_URL", DEFAULT_URL)
-    if not key:
-        sys.stderr.write("PULSE_ZERO_SERVICE_KEY not set\n")
-        sys.exit(1)
+    key, url = load_creds()
 
     if args.list_open:
         list_cards("open", key, url)
@@ -855,6 +945,8 @@ def main():
         resolve(args, key, url)
     elif args.type == "comment":
         comment(args, key, url)
+    elif args.type == "patch-payload":
+        patch_payload(args, key, url)
     elif args.type == "run-event":
         run_event(args, key, url)
     elif args.type:
